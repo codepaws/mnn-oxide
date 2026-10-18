@@ -30,7 +30,7 @@ impl Drop for RuntimeHandle {
 ///
 /// # Example
 /// ```no_run
-/// use mnn_rs::{RuntimeInfo, Interpreter, ScheduleConfig};
+/// use mnn_rs::{BackendType, Interpreter, InterpreterRuntimeExt, RuntimeInfo};
 ///
 /// // Create runtime manager for GPU
 /// let runtime = RuntimeInfo::new(BackendType::Auto, 4)?;
