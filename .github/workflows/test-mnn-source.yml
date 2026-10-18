@@ -1,18 +1,8 @@
-name: Test (Prebuilt MNN)
+name: Test (Source-Built MNN)
 
-# Runs real inference tests against the prebuilt MNN binaries downloaded from
-# the GitHub Release matching the current crate version (CARGO_PKG_VERSION).
-#
-# Prerequisites:
-#   - A GitHub Release `v<CARGO_PKG_VERSION>` (currently v0.1.6) on wapznw/mnn-rs
-#     must contain `mnn-<target>.tar.gz` for each matrix target. These are
-#     produced by .github/workflows/build-binaries.yml on tag push. If the
-#     release/assets are missing, MNN linking fails.
-#   - The prebuilt bundle (built by build-binaries.yml) ships both the MNN
-#     library and the LLM C++ headers (llm/llm.hpp) that mnn-oxide-sys's wrapper
-#     needs under the `llm` feature, so build.rs downloads and uses it directly.
-#   - GitHub runners must be able to reach huggingface.co to download the LLM
-#     test model (a ModelScope alternative is provided in a comment below).
+# Runs real inference tests against MNN built from a pinned, clean source
+# checkout. Prebuilt acquisition remains an explicit opt-in and is tested
+# separately by the sys crate's artifact-validation tests.
 #
 # Tests covered:
 #   - Classification: tests/models/mobilenetV3.mnn is committed in the repo and
@@ -35,6 +25,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  MNN_SOURCE_PATH: ${{ github.workspace }}/target/mnn-source-3.6.1
+  MNN_SOURCE_VERSION: d407447ed56c4121a11ccbd266dc184ca1ead0c2
+  MNN_MSVC_RUNTIME: MD
   # Directory where the LLM test model is downloaded; the user's LLM test and
   # the llm_stream example both read tests/models/llm/config.json from here.
   MNN_TEST_LLM_DIR: tests/models/llm
@@ -59,8 +52,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout pinned MNN source
+        uses: actions/checkout@v4
+        with:
+          repository: alibaba/MNN
+          ref: d407447ed56c4121a11ccbd266dc184ca1ead0c2
+          path: target/mnn-source-3.6.1
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: ${{ matrix.target }}
 
@@ -120,13 +128,13 @@ jobs:
           PYEOF
 
       - name: Run tests (classification + LLM)
-        # Default features (cpu, static) + llm. build.rs downloads the matching
-        # prebuilt MNN (lib + LLM headers) automatically. `--include-ignored`
-        # also runs the model-dependent classification tests (mobilenetV3.mnn
-        # is committed).
+        # Source-build MNN with the LLM module enabled. `--include-ignored`
+        # also runs model-dependent classification tests (mobilenetV3.mnn is
+        # committed).
         shell: bash
         run: |
-          cargo test --target ${{ matrix.target }} --features llm
+          cargo test --target ${{ matrix.target }} --no-default-features \
+            --features cpu,static,llm,build-from-source -- --include-ignored
 
       - name: Run LLM streaming example
         # Real streaming generation against the downloaded model. This is the
@@ -142,7 +150,8 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          cargo run --target ${{ matrix.target }} --example llm_stream --features llm -- tests/models/llm/config.json "Hello, please introduce yourself in one sentence." &
+          cargo run --target ${{ matrix.target }} --example llm_stream --no-default-features \
+            --features cpu,static,llm,build-from-source -- tests/models/llm/config.json "Hello, please introduce yourself in one sentence." &
           llm_pid=$!
           ( sleep 120; kill "$llm_pid" 2>/dev/null ) &
           wait "$llm_pid"
