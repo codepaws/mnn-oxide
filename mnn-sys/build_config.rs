@@ -7,6 +7,21 @@ pub enum AcquisitionMode {
     Prebuilt,
 }
 
+/// Return whether static linking is selected, requiring exactly one link mode.
+pub fn validate_link_mode(static_link: bool, dynamic_link: bool) -> Result<bool, String> {
+    match (static_link, dynamic_link) {
+        (true, false) => Ok(true),
+        (false, true) => Ok(false),
+        (false, false) => {
+            Err("select exactly one MNN link mode: default `dynamic` or explicit `static`".into())
+        }
+        (true, true) => Err(
+            "static and dynamic MNN link modes conflict; use `--no-default-features` with `static`"
+                .into(),
+        ),
+    }
+}
+
 pub fn validate_acquisition(
     prebuilt: bool,
     source: bool,
@@ -190,6 +205,14 @@ mod tests {
         );
         assert!(validate_acquisition(true, false, true, false, false).is_err());
         assert!(validate_acquisition(true, false, false, true, true).is_err());
+    }
+
+    #[test]
+    fn link_mode_requires_exactly_one_static_or_dynamic_choice() {
+        assert_eq!(validate_link_mode(true, false), Ok(true));
+        assert_eq!(validate_link_mode(false, true), Ok(false));
+        assert!(validate_link_mode(false, false).is_err());
+        assert!(validate_link_mode(true, true).is_err());
     }
 
     #[test]

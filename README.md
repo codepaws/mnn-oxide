@@ -8,7 +8,7 @@ Rust bindings for [MNN](https://github.com/alibaba/MNN) (Mobile Neural Network),
 
 ## Project lineage
 
-This is the maintained [CodePaws fork](https://github.com/codepaws/mnn-rs) of [wapznw/mnn-rs](https://github.com/wapznw/mnn-rs). The original wrapper project is credited as the source of this fork. The wrapped inference engine is [Alibaba MNN](https://github.com/alibaba/MNN).
+This Rust wrapper is derived from [wapznw/mnn-rs](https://github.com/wapznw/mnn-rs). The wrapped inference engine is [Alibaba MNN](https://github.com/alibaba/MNN).
 
 ## Features
 
@@ -32,7 +32,10 @@ Supply matching headers and libraries explicitly. A clean `cargo build` without 
 export MNN_LIB_DIR=/path/to/mnn/lib
 export MNN_INCLUDE_DIR=/path/to/mnn/include
 
-# Link to the selected MNN installation
+# Default features use dynamic linking
+cargo build
+
+# To request static linking instead
 cargo build --no-default-features --features cpu,static
 ```
 
@@ -49,7 +52,7 @@ set MNN_INCLUDE_DIR=C:\path\to\mnn\include
 cargo build --no-default-features --features cpu,dynamic,system-mnn
 ```
 
-Prebuilt acquisition is opt-in and accepts only an artifact you supply: Cargo downloads it only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain `include/MNN/Interpreter.hpp` and a root `lib/` directory with a library filename recognized for the selected target and static/dynamic link mode; its exact bytes are verified against your SHA-256 before extraction. `MNN_PREBUILT_TARGET` is your assertion of the artifact target, checked only for an exact match with Cargo's `TARGET`; the binary architecture and ABI are not inspected. SHA-256 verifies bytes, not publisher, provenance, or license. You are responsible for confirming the artifact's provenance, license rights, and compatibility with your target, toolchain, and enabled MNN features. This project does not publish or select a prebuilt MNN artifact. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Static and dynamic linking are selected explicitly with `static` or `dynamic`.
+Prebuilt acquisition is opt-in and accepts only an artifact you supply: Cargo downloads it only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain `include/MNN/Interpreter.hpp` and a root `lib/` directory with a library filename recognized for the selected target and static/dynamic link mode; its exact bytes are verified against your SHA-256 before extraction. `MNN_PREBUILT_TARGET` is your assertion of the artifact target, checked only for an exact match with Cargo's `TARGET`; the binary architecture and ABI are not inspected. SHA-256 verifies bytes, not publisher, provenance, or license. You are responsible for confirming the artifact's provenance, license rights, and compatibility with your target, toolchain, and enabled MNN features. This project does not publish or select a prebuilt MNN artifact. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Dynamic linking is selected by default; static linking requires disabling defaults and selecting `static` explicitly.
 
 To use a user-supplied prebuilt archive, set all five variables below. `MNN_PREBUILT_TARGET` must exactly match Cargo's target triple (for example, `x86_64-unknown-linux-gnu`), but it is not a binary architecture check; `MNN_PREBUILT_VERSION` is a cache label chosen by you. The cache stores the verified archive and re-extracts it safely on each build. Archive symlinks, hard links, special files, and paths escaping the archive root are rejected.
 
@@ -155,8 +158,8 @@ fn main() -> Result<(), mnn_rs::MnnError> {
 
 | Feature | Description |
 |---------|-------------|
-| `static` (default) | Static link MNN library |
-| `dynamic` | Dynamic link MNN library. Requires `--no-default-features` (conflicts with the default `static`) |
+| `dynamic` (default) | Dynamically link MNN library |
+| `static` | Statically link MNN library. Select with `--no-default-features --features cpu,static` |
 
 ### Backend Support
 
@@ -217,7 +220,7 @@ off `LLM_SUPPORT_HTTP_RESOURCE` (the bundled cpp-httplib does not support
 32-bit platforms, so models must be loaded from local files):
 
 ```bash
-cargo build --features llm,build-from-source --no-default-features
+cargo build --features cpu,dynamic,llm,build-from-source --no-default-features
 ```
 
 The LLM C++ engine (`MNN::Transformer::Llm` / `Embedding`) is merged into
@@ -257,7 +260,7 @@ cargo run --example basic_inference -- /path/to/model.mnn
 Configure a target-compatible MNN installation explicitly. Source builds use an existing checkout at an exact commit SHA:
 
 ```bash
-cargo build --target aarch64-linux-android --features build-from-source --no-default-features
+cargo build --target aarch64-linux-android --features cpu,dynamic,build-from-source --no-default-features
 ```
 
 ### Android
@@ -271,7 +274,7 @@ cargo build --target aarch64-linux-android --no-default-features --features cpu,
 
 # Or build from source (requires NDK and Ninja)
 export ANDROID_NDK_HOME=/path/to/android-ndk
-cargo build --target aarch64-linux-android --features build-from-source --no-default-features
+cargo build --target aarch64-linux-android --features cpu,dynamic,build-from-source --no-default-features
 ```
 
 **Rust Android target identifiers (runtime qualification pending):**
@@ -371,12 +374,14 @@ No prebuilt MNN artifact is selected, published, or qualified by this crate. The
 
 ## License
 
-Licensed under either of
+The Rust wrapper code in this project is dual-licensed. You may use it under either of:
 
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
 - MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
-at your option.
+at your option. This dual license applies to the wrapper code; it does not change the license of the MNN engine.
+
+[Alibaba MNN](https://github.com/alibaba/MNN), including MNN DLLs and other native MNN libraries, is licensed under the Apache License, Version 2.0. If you use or redistribute an MNN library with this wrapper, comply with MNN's license terms and preserve/include the applicable license and attribution notices. Components bundled with or linked into a particular MNN build may have additional licenses; check the notices shipped with that MNN distribution.
 
 ## Contribution
 

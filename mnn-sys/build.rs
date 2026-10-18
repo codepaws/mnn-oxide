@@ -129,17 +129,8 @@ fn main() {
         emit_source_rerun_paths(source);
     }
 
-    if static_link && dynamic_link {
-        panic!(
-            "Cannot enable both 'static' and 'dynamic' features simultaneously.\n\
-             The 'dynamic' feature conflicts with the default 'static' feature.\n\
-             When using 'dynamic', disable default features:\n\
-             cargo build --no-default-features --features cpu,dynamic[,system-mnn|build-from-source]"
-        );
-    }
-
-    // If no link mode specified, default to static
-    let use_static = !dynamic_link;
+    let use_static = build_config::validate_link_mode(static_link, dynamic_link)
+        .unwrap_or_else(|message| panic!("MNN link mode configuration error: {message}"));
 
     // Explicit paths only. Default Cargo builds never acquire the MNN engine.
     // This allows testing with local artifacts without downloading

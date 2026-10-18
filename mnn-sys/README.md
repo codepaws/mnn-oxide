@@ -24,7 +24,10 @@ This crate provides low-level unsafe bindings to MNN's C API. For a safe, idioma
 export MNN_LIB_DIR=/path/to/mnn/lib
 export MNN_INCLUDE_DIR=/path/to/mnn/include
 
-# Select static or dynamic linking explicitly
+# Default features use dynamic linking
+cargo build
+
+# To request static linking instead
 cargo build --no-default-features --features cpu,static
 ```
 
@@ -47,8 +50,8 @@ The example URL and checksum are placeholders and must not be copied literally. 
 
 | Feature | Description |
 |---------|-------------|
-| `static` (default) | Static link MNN |
-| `dynamic` | Dynamic link MNN. Requires `--no-default-features` (conflicts with the default `static`) |
+| `dynamic` (default) | Dynamically link MNN |
+| `static` | Statically link MNN. Select with `--no-default-features --features cpu,static` |
 | `use-prebuilt` | Opt-in user-supplied HTTPS archive, SHA-256 verified before safe extraction |
 | `build-from-source` | Build from an existing checkout pinned to a full commit SHA |
 | `llm` | Enable MNN LLM engine bindings |
@@ -77,4 +80,4 @@ The example URL and checksum are placeholders and must not be copied literally. 
 
 ## License
 
-Licensed under either of Apache License, Version 2.0 or MIT License at your option.
+The `mnn-rs-sys` wrapper code is dual-licensed under either the Apache License, Version 2.0 or the MIT License, at your option. This does not change the license of the native MNN engine: [Alibaba MNN](https://github.com/alibaba/MNN), including MNN DLLs and other native MNN libraries, is Apache-2.0. If you use or redistribute an MNN library, comply with MNN's license terms and preserve/include applicable license and attribution notices. Particular MNN builds may include components with additional licenses; check the notices shipped with the library distribution.
