@@ -40,7 +40,7 @@ Downloads have a 120-second overall timeout and a 6,694,800-byte maximum.
 | --- | --- | --- | --- | --- | --- |
 | Windows workstation | `x86_64-pc-windows-msvc` | MNN `d407447ed56c4121a11ccbd266dc184ca1ead0c2`, dynamic and static, CPU | Passed 2026-10-19 | Passed 2026-10-19 | Full dynamic suite passed; static model qualification test and example also passed |
 | p3pro Linux host | `x86_64-unknown-linux-gnu` | MNN `d407447ed56c4121a11ccbd266dc184ca1ead0c2`, dynamic, CPU | Passed 2026-10-18 | Not run | Run the Rust model smoke example natively and record output |
-| DGX Spark | `aarch64-unknown-linux-gnu` | MNN `d407447ed56c4121a11ccbd266dc184ca1ead0c2`, dynamic, CPU | Passed 2026-10-18 | Not run | Run the Rust model smoke example natively and record output |
+| DGX Spark | `aarch64-unknown-linux-gnu` | MNN `d407447ed56c4121a11ccbd266dc184ca1ead0c2`, dynamic, CPU + CUDA | Full suite passed 2026-10-19; CUDA-enabled source build passed | PP-LCNet CUDA inference passed 2026-10-19 | NVIDIA GB10 (compute capability 12.1), driver 580.178.04, CUDA toolkit 13.0; built for `12.0` with `MNN_CUDA_NATIVE_ARCH=ON` |
 | GitHub Actions Linux | `x86_64-unknown-linux-gnu` | MNN `d407447ed56c4121a11ccbd266dc184ca1ead0c2`, static, CPU | Pending first workflow run | Pending first workflow run | `model-qualification.yml` |
 | GitHub Actions Windows | `x86_64-pc-windows-msvc` | MNN `d407447ed56c4121a11ccbd266dc184ca1ead0c2`, static, CPU | Pending first workflow run | Pending first workflow run | `model-qualification.yml` |
 | GitHub Actions macOS ARM64 (`macos-15`) | `aarch64-apple-darwin` | MNN `d407447ed56c4121a11ccbd266dc184ca1ead0c2`, static, CPU | Pending first workflow run | Pending first workflow run | Explicit ARM64 label and `uname -m` assertion |
@@ -58,17 +58,17 @@ qualification test target is explicitly selected.
 | Backend / device | Build or discovery check | Real-model inference | Status |
 | --- | --- | --- | --- |
 | CPU | Native builds on Windows x86-64, Linux x86-64, and Linux ARM64 | PP-LCNet inference verified on Windows x86-64 | CPU qualification is active; Linux model runs remain pending |
-| OpenCL / AMD Radeon RX 9070 XT | Windows OpenCL driver/device enumeration passed; local MNN DLL requested OpenCL but reported no matching backend and selected CPU | Test correctly failed after detecting the CPU fallback | Not qualified; build/runtime backend registration still needs investigation |
-| Vulkan / AMD Radeon RX 9070 XT | Windows Vulkan driver/device enumeration passed | PP-LCNet inference passed 2026-10-19; session reported Vulkan and returned two finite scores | Model-backed Vulkan path qualified on this workstation |
-| CUDA | Not qualified on this fork | Not run | Pending a supported NVIDIA host and runtime |
+| OpenCL / AMD Radeon RX 9070 XT | Windows driver/device enumeration passed | Previous run used the wrong MNN enum value (1 is Metal, not OpenCL) | Not qualified; rerun with corrected backend constants |
+| Vulkan / AMD Radeon RX 9070 XT | Windows driver/device enumeration passed | Previous reported pass used the wrong MNN enum value (3 is OpenCL, not Vulkan) | Not qualified; rerun with corrected backend constants |
+| CUDA / NVIDIA GB10 (DGX Spark) | MNN CUDA source build passed on Linux ARM64 with CUDA 13.0 and `MNN_CUDA_ARCHS=12.0` | PP-LCNet session reported CUDA and returned two finite scores; accelerator test passed 2026-10-19 | Qualified for this Spark configuration (driver 580.178.04, compute capability 12.1) |
 
-CPU model inference is the portable baseline. GPU rows should be marked passed
-only after the same model-backed smoke test runs successfully on the named
-device/backend; backend compilation or device enumeration alone is not inference
-evidence. The Vulkan pass used a device-to-host tensor transfer to seed the
-model input and read the output, and verified the session backend reported by
-MNN. The OpenCL run is deliberately left unqualified because MNN silently
-selected CPU; the same backend assertion caught that fallback.
+CPU model inference is the portable baseline. GPU rows are marked passed only
+after the model-backed test runs on the named device/backend and confirms the
+session backend reported by MNN. The previous OpenCL and Vulkan results were
+invalidated after the Spark qualification found stale Rust enum constants: the
+old values sent Metal for OpenCL and OpenCL for Vulkan. The constants now match
+MNN 3.6.1's `MNNForwardType.h`; requalification of AMD OpenCL and Vulkan is still
+pending.
 
 The GitHub matrix explicitly builds and links MNN statically so the test binary
 does not depend on a separately deployed shared library at runtime.
@@ -93,7 +93,10 @@ cargo test --no-default-features --features cpu,dynamic,opencl --test accelerato
 cargo test --no-default-features --features cpu,dynamic,vulkan --test accelerator_qualification -- --ignored --nocapture
 ```
 
-Use `cuda` or `metal` in place of `opencl` or `vulkan` on supported hosts. A
+Use `cuda` or `metal` in place of `opencl` or `vulkan` on supported hosts. For
+CUDA on Linux, set `MNN_CUDA_ARCHS` and `MNN_CUDA_NATIVE_ARCH=ON` when the
+toolkit's supported architectures differ from MNN's default list; source builds
+also stage MNN's `libMNN_Cuda_Main.so` companion beside `libMNN.so`. A
 source-built MNN must also be configured with that backend enabled; merely
 enabling the Rust feature does not build or install the native runtime. Set
 `MNN_TEST_MODEL` to an already downloaded copy to skip model download. A pass

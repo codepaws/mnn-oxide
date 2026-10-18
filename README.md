@@ -13,7 +13,7 @@ The workspace's minimum supported Rust version is 1.88.
 ## Features
 
 - **Safe Rust API**: All MNN operations are wrapped in safe Rust types with proper error handling
-- **Cross-platform codebase**: Native runtime qualification remains pending for each target and backend
+- **Cross-platform codebase**: CPU runs on Windows, Linux x86-64, and Linux ARM64; CUDA model inference is qualified on DGX Spark, while other GPU/device combinations remain under test
 - **Explicit native dependency**: Cargo never downloads, clones, or builds the MNN engine in its default configuration.
 - **Backend options**: CPU, CUDA, OpenCL, Vulkan, and Metal when present in the selected MNN library
 - **Static/Dynamic Linking**: Choose between static or dynamic linking
