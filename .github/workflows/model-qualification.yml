@@ -12,7 +12,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  MNN_SOURCE_PATH: target/mnn-source-3.6.1
+  # Cargo runs the sys crate's build script from its package directory, so the
+  # checked-out source path must be absolute rather than relative to the repo.
+  MNN_SOURCE_PATH: ${{ github.workspace }}/target/mnn-source-3.6.1
   MNN_SOURCE_VERSION: d407447ed56c4121a11ccbd266dc184ca1ead0c2
   MNN_MSVC_RUNTIME: MD
   NUM_JOBS: 4
