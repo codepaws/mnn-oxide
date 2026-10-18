@@ -399,17 +399,17 @@ impl DataType {
     pub(crate) fn to_type_code(&self) -> i32 {
         // MNN uses halide_type_t codes: (code << 8) | bits
         match self {
-            DataType::Float32 => (0 << 8) | 32, // halide_type_float = 0
-            DataType::Float64 => (0 << 8) | 64,
-            DataType::Int32 => (1 << 8) | 32, // halide_type_int = 1
-            DataType::Int16 => (1 << 8) | 16,
+            DataType::Float32 => (2 << 8) | 32, // halide_type_float = 2
+            DataType::Float64 => (2 << 8) | 64,
+            DataType::Int32 => 32, // halide_type_int = 0
+            DataType::Int16 => 16,
             #[cfg(feature = "int8")]
-            DataType::Int8 => (1 << 8) | 8,
-            DataType::UInt8 => (2 << 8) | 8, // halide_type_uint = 2
+            DataType::Int8 => 8,
+            DataType::UInt8 => (1 << 8) | 8, // halide_type_uint = 1
             #[cfg(feature = "fp16")]
-            DataType::Float16 => (0 << 8) | 16,
+            DataType::Float16 => (2 << 8) | 16,
             #[cfg(feature = "bf16")]
-            DataType::BFloat16 => (0 << 8) | 16,
+            DataType::BFloat16 => (4 << 8) | 16, // halide_type_bfloat = 4
         }
     }
 
@@ -425,17 +425,17 @@ impl DataType {
         let bits = code & 0xFF;
 
         match (type_code, bits) {
-            (0, 32) => Some(DataType::Float32),
-            (0, 64) => Some(DataType::Float64),
-            (1, 32) => Some(DataType::Int32),
-            (1, 16) => Some(DataType::Int16),
+            (2, 32) => Some(DataType::Float32),
+            (2, 64) => Some(DataType::Float64),
+            (0, 32) => Some(DataType::Int32),
+            (0, 16) => Some(DataType::Int16),
             #[cfg(feature = "int8")]
-            (1, 8) => Some(DataType::Int8),
-            (2, 8) => Some(DataType::UInt8),
+            (0, 8) => Some(DataType::Int8),
+            (1, 8) => Some(DataType::UInt8),
             #[cfg(feature = "fp16")]
-            (0, 16) => Some(DataType::Float16),
+            (2, 16) => Some(DataType::Float16),
             #[cfg(feature = "bf16")]
-            (0, 16) => Some(DataType::BFloat16),
+            (4, 16) => Some(DataType::BFloat16),
             _ => None,
         }
     }
@@ -535,6 +535,31 @@ mod tests {
         assert_eq!(DataType::Float32.size(), 4);
         assert_eq!(DataType::Int32.size(), 4);
         assert_eq!(DataType::Float64.size(), 8);
+    }
+
+    #[test]
+    fn data_type_codes_match_mnn_halide_runtime() {
+        assert_eq!(DataType::Float32.to_type_code(), (2 << 8) | 32);
+        assert_eq!(DataType::Float64.to_type_code(), (2 << 8) | 64);
+        assert_eq!(DataType::Int32.to_type_code(), 32);
+        assert_eq!(DataType::Int16.to_type_code(), 16);
+        assert_eq!(DataType::UInt8.to_type_code(), (1 << 8) | 8);
+    }
+
+    #[cfg(feature = "fp16")]
+    #[test]
+    fn float16_uses_halide_float_code() {
+        let code = DataType::Float16.to_type_code();
+        assert_eq!(code, (2 << 8) | 16);
+        assert_eq!(DataType::try_from_type_code(code), Some(DataType::Float16));
+    }
+
+    #[cfg(feature = "bf16")]
+    #[test]
+    fn bfloat16_uses_distinct_halide_bfloat_code() {
+        let code = DataType::BFloat16.to_type_code();
+        assert_eq!(code, (4 << 8) | 16);
+        assert_eq!(DataType::try_from_type_code(code), Some(DataType::BFloat16));
     }
 
     #[test]
