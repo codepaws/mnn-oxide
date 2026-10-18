@@ -86,6 +86,25 @@ impl Session {
         })
     }
 
+    /// Get the first backend MNN assigned to this session.
+    ///
+    /// This reports the backend MNN actually configured for the session and
+    /// can be used to detect a native fallback from an explicitly requested
+    /// accelerator. MNN may create multiple pipeline backends internally; this
+    /// method reports the first one, matching the wrapper's single-backend
+    /// [`ScheduleConfig`].
+    pub fn backend(&self) -> MnnResult<crate::BackendType> {
+        let backend = unsafe {
+            mnn_oxide_sys::mnn_interpreter_get_session_backend(self.interpreter, self.inner)
+        };
+        if backend < 0 {
+            return Err(MnnError::backend_error(
+                "MNN did not report the session backend",
+            ));
+        }
+        Ok(crate::BackendType::from_mnn_type(backend))
+    }
+
     /// Get an input tensor by name.
     ///
     /// # Arguments

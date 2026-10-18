@@ -58,18 +58,45 @@ qualification test target is explicitly selected.
 | Backend / device | Build or discovery check | Real-model inference | Status |
 | --- | --- | --- | --- |
 | CPU | Native builds on Windows x86-64, Linux x86-64, and Linux ARM64 | PP-LCNet inference verified on Windows x86-64 | CPU qualification is active; Linux model runs remain pending |
-| OpenCL / AMD Radeon RX 9070 XT | Windows OpenCL build and host device enumeration passed | Not run | Inference pending; preserve the known OpenCL regression until safely reproduced with a valid model |
-| Vulkan / AMD Radeon RX 9070 XT | Host device enumeration passed | Not run | Build and inference qualification pending |
+| OpenCL / AMD Radeon RX 9070 XT | Windows OpenCL driver/device enumeration passed; local MNN DLL requested OpenCL but reported no matching backend and selected CPU | Test correctly failed after detecting the CPU fallback | Not qualified; build/runtime backend registration still needs investigation |
+| Vulkan / AMD Radeon RX 9070 XT | Windows Vulkan driver/device enumeration passed | PP-LCNet inference passed 2026-10-19; session reported Vulkan and returned two finite scores | Model-backed Vulkan path qualified on this workstation |
 | CUDA | Not qualified on this fork | Not run | Pending a supported NVIDIA host and runtime |
 
 CPU model inference is the portable baseline. GPU rows should be marked passed
 only after the same model-backed smoke test runs successfully on the named
 device/backend; backend compilation or device enumeration alone is not inference
-evidence.
+evidence. The Vulkan pass used a device-to-host tensor transfer to seed the
+model input and read the output, and verified the session backend reported by
+MNN. The OpenCL run is deliberately left unqualified because MNN silently
+selected CPU; the same backend assertion caught that fallback.
 
 The GitHub matrix explicitly builds and links MNN statically so the test binary
-does not depend on a separately deployed shared library at runtime. Its crate
-test command skips `cargo_defaults_to_dynamic_mnn_linking`, because that test
-asserts the crate's normal default while this qualification job intentionally
-overrides it. The default-link behavior remains covered by the ordinary
-dynamic-link acceptance run.
+does not depend on a separately deployed shared library at runtime.
+`default_link_mode` now has separate feature-gated tests for the crate's normal
+dynamic default and for explicitly selected static linking, so both modes are
+checked without applying the default assertion to static workflows.
+
+## Opt-in accelerator inference check
+
+`tests/accelerator_qualification.rs` reuses the pinned PP-LCNet model and checks
+that the selected backend can create a session, execute inference, and return
+the expected finite outputs. It is ignored during ordinary `cargo test` runs so
+CPU-only CI does not pretend to qualify an accelerator. GitHub Actions does
+compile-check the Rust pathways for CUDA, OpenCL, and Vulkan on each target,
+but does not claim native runtime qualification. Run it on a host with
+the corresponding MNN backend and driver installed, selecting one accelerator
+feature at a time. The same test is available for CUDA, OpenCL, Vulkan, and
+Metal:
+
+```powershell
+cargo test --no-default-features --features cpu,dynamic,opencl --test accelerator_qualification -- --ignored --nocapture
+cargo test --no-default-features --features cpu,dynamic,vulkan --test accelerator_qualification -- --ignored --nocapture
+```
+
+Use `cuda` or `metal` in place of `opencl` or `vulkan` on supported hosts. A
+source-built MNN must also be configured with that backend enabled; merely
+enabling the Rust feature does not build or install the native runtime. Set
+`MNN_TEST_MODEL` to an already downloaded copy to skip model download. A pass
+records a successful model-backed run on the selected backend; compilation and
+device enumeration alone are not qualification. The test checks the backend
+MNN assigned to the session, so a silent fallback to CPU fails the test.

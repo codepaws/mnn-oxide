@@ -232,6 +232,12 @@ extern "C" {
         session: *mut MNNSession,
     ) -> f32;
 
+    /// Get the first backend MNN assigned to a session, or -1 if unavailable.
+    pub fn mnn_interpreter_get_session_backend(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> c_int;
+
     /// Get business code
     pub fn mnn_interpreter_get_biz_code(interpreter: *mut MNNInterpreter) -> *const c_char;
 
@@ -361,6 +367,12 @@ extern "C" {
 
     /// Copy data from device tensor to host tensor
     pub fn mnn_tensor_copy_to_host(host_tensor: *mut MNNTensor, dest: *const MNNTensor) -> c_int;
+
+    /// Create a host tensor with the same shape/type as a device tensor.
+    pub fn mnn_tensor_create_host_from_device(
+        device_tensor: *const MNNTensor,
+        copy_data: c_int,
+    ) -> *mut MNNTensor;
 
     /// Create a device tensor with given shape
     pub fn mnn_tensor_create_device(

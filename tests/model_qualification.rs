@@ -30,6 +30,10 @@ fn pp_lcnet_cpu_inference_returns_two_finite_class_scores() {
     let mut session = interpreter
         .create_session(ScheduleConfig::new().backend(BackendType::CPU))
         .expect("create CPU session");
+    assert_eq!(
+        session.backend().expect("get session backend"),
+        BackendType::CPU
+    );
 
     let mut input = session.get_input(None).expect("get model input");
     assert_eq!(input.dtype().expect("input dtype"), DataType::Float32);

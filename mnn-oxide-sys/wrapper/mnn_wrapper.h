@@ -134,6 +134,9 @@ float mnn_interpreter_get_session_memory(MNNInterpreter* interpreter, MNNSession
 /** Get session FLOPS in M */
 float mnn_interpreter_get_session_flops(MNNInterpreter* interpreter, MNNSession* session);
 
+/** Get the first backend MNN assigned to a session, or -1 if unavailable. */
+int mnn_interpreter_get_session_backend(MNNInterpreter* interpreter, MNNSession* session);
+
 /** Get business code */
 const char* mnn_interpreter_get_biz_code(MNNInterpreter* interpreter);
 
@@ -294,6 +297,9 @@ int mnn_tensor_copy_from_host(MNNTensor* dest, const MNNTensor* host_tensor);
 
 /** Copy data from device tensor to host tensor */
 int mnn_tensor_copy_to_host(MNNTensor* host_tensor, const MNNTensor* dest);
+
+/** Create a host tensor with the same shape/type as a device tensor. */
+MNNTensor* mnn_tensor_create_host_from_device(const MNNTensor* device_tensor, int copy_data);
 
 /** Create a device tensor with given shape */
 MNNTensor* mnn_tensor_create_device(

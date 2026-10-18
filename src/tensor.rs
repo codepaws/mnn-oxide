@@ -434,6 +434,33 @@ impl Tensor {
         Ok(())
     }
 
+    /// Create a host tensor matching this tensor's shape and data type.
+    ///
+    /// For a device tensor, `copy_data` controls whether the current device
+    /// values are copied into the new host tensor. Use `false` to prepare an
+    /// input buffer, write it with [`Tensor::write`], then transfer it with
+    /// [`Tensor::copy_from_host`].
+    pub fn create_host_tensor(&self, copy_data: bool) -> MnnResult<Tensor> {
+        let inner = unsafe {
+            mnn_oxide_sys::mnn_tensor_create_host_from_device(self.inner, i32::from(copy_data))
+        };
+        if inner.is_null() {
+            return Err(native_error(
+                "Failed to create host tensor",
+                MnnError::tensor_error("Failed to create host tensor from device tensor"),
+            ));
+        }
+
+        Ok(unsafe {
+            Tensor::from_owned_ptr(
+                inner,
+                self.name.clone(),
+                mnn_oxide_sys::mnn_tensor_destroy,
+                self._session_owner.clone(),
+            )
+        })
+    }
+
     /// Create a device tensor with the given shape and format.
     ///
     /// # Arguments

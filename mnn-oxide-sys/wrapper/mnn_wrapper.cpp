@@ -213,6 +213,24 @@ float mnn_interpreter_get_session_flops(MNNInterpreter* interpreter, MNNSession*
     });
 }
 
+int mnn_interpreter_get_session_backend(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (!interpreter || !session) {
+            return -1;
+        }
+
+        // SessionInfoCode::BACKENDS writes one entry for each configured
+        // pipeline. ScheduleConfig in this wrapper selects one backend.
+        int32_t backends[MNN_FORWARD_ALL] = {};
+        auto* interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto* native_session = reinterpret_cast<Session*>(session);
+        if (!interp->getSessionInfo(native_session, Interpreter::BACKENDS, backends)) {
+            return -1;
+        }
+        return backends[0];
+    });
+}
+
 const char* mnn_interpreter_get_biz_code(MNNInterpreter* interpreter) {
     return mnn_oxide_abi::with_c_boundary<const char*>("", [&]() -> const char* {
         if (!interpreter) {
@@ -730,6 +748,17 @@ int mnn_tensor_copy_to_host(MNNTensor* host_tensor, const MNNTensor* dest) {
 
         bool result = d->copyToHostTensor(h);
         return result ? MNN_ERROR_NONE : MNN_ERROR_EXECUTION;
+    });
+}
+
+MNNTensor* mnn_tensor_create_host_from_device(const MNNTensor* device_tensor, int copy_data) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+        if (!device_tensor) {
+            return nullptr;
+        }
+        auto device = reinterpret_cast<const MNN::Tensor*>(device_tensor);
+        auto* host = MNN::Tensor::createHostTensorFromDevice(device, copy_data != 0);
+        return reinterpret_cast<MNNTensor*>(host);
     });
 }
 

@@ -93,6 +93,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
+      - name: Check accelerator feature pathways
+        # These compile-only checks exercise feature gates, Rust backend
+        # selection, the GPU example, and the opt-in acceptance test without
+        # claiming that this runner has the native drivers or GPU libraries.
+        shell: bash
+        env:
+          DOCS_RS: "1"
+        run: |
+          for backend in cuda opencl vulkan; do
+            cargo check --target ${{ matrix.target }} --no-default-features \
+              --features cpu,static,$backend --tests --examples
+          done
+
       - name: Cache LLM test model
         id: llm-model
         uses: actions/cache@v4
