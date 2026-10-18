@@ -587,6 +587,7 @@ dependencies = [
  "flate2",
  "num_cpus",
  "pkg-config",
+ "serde_json",
  "sha2",
  "tar",
  "ureq",

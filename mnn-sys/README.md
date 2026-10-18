@@ -33,7 +33,23 @@ cargo build --no-default-features --features cpu,static
 
 Source builds require `build-from-source`, `MNN_SOURCE_PATH` pointing to an existing clean checkout, and `MNN_SOURCE_VERSION` set to its full 40-character commit SHA. Modified and untracked files are rejected; Cargo will not clone the engine.
 
-`use-prebuilt` is an explicit user-supplied acquisition mode. It is never enabled by default and requires all of `MNN_PREBUILT_URL` (HTTPS), `MNN_PREBUILT_SHA256` (64 hexadecimal digits), `MNN_PREBUILT_TARGET` (a user-asserted target label exactly matching Cargo `TARGET`), `MNN_PREBUILT_VERSION` (cache label), and `MNN_PREBUILT_CACHE_DIR`. The target value is not checked against the binary architecture or ABI. The supplied gzip-compressed tar archive must contain `include/MNN/Interpreter.hpp` plus a root `lib/` containing a recognized library filename for the target label and selected static/dynamic link mode. Its bytes are verified before extraction; traversal paths, links, and special archive entries are rejected. The checksum verifies bytes only, not publisher, provenance, license, or compatibility. Callers are responsible for provenance, license rights, and target/toolchain compatibility. The crate does not publish or select artifact URLs or checksums.
+`use-prebuilt` is an explicit user-supplied acquisition mode. It is never enabled by default and requires all of `MNN_PREBUILT_URL` (HTTPS), `MNN_PREBUILT_SHA256` (64 hexadecimal digits), `MNN_PREBUILT_TARGET` (a target label exactly matching Cargo `TARGET`), `MNN_PREBUILT_VERSION` (cache label), and `MNN_PREBUILT_CACHE_DIR`. The gzip-compressed tar archive must contain `include/MNN/Interpreter.hpp`, a root `lib/` with a recognized library filename, and a root `mnn-rs-artifact.json` manifest. Archive traversal paths, links, and special entries are rejected. The manifest's target and link mode must match this build; its declared backends and optional modules must include the Cargo features selected by this build; every named license/notice file must exist in the archive. These are declarations supplied by the artifact publisher, not binary inspection: the crate does not verify architecture, ABI, MNN version, feature contents, publisher, or license validity. The archive SHA-256 verifies bytes only. Callers remain responsible for provenance, redistribution rights, and confirming the artifact is compatible with their toolchain and runtime environment.
+
+Manifest format version 1:
+
+```json
+{
+  "schema_version": 1,
+  "mnn_version": "3.6.1",
+  "target": "x86_64-unknown-linux-gnu",
+  "link_mode": "static",
+  "backends": ["cpu"],
+  "optional_modules": [],
+  "notice_files": ["LICENSE-MNN", "THIRD_PARTY_NOTICES.txt"]
+}
+```
+
+`target`, `link_mode`, `backends`, and `optional_modules` are compatibility declarations. `notice_files` contains archive-relative paths and must name at least one existing file. The MNN version is recorded for users but is not compared with the headers or native library. The crate does not publish or select artifact URLs or checksums.
 
 ```bash
 export MNN_PREBUILT_URL=https://example.invalid/path/to/your-mnn.tar.gz

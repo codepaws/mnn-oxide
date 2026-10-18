@@ -157,7 +157,30 @@ fn main() {
                 &target,
             )
             .unwrap_or_else(|message| panic!("MNN prebuilt configuration error: {message}"));
-            let (lib, include) = prebuilt::acquire(&config, use_static)
+            let requirements = prebuilt::ArtifactRequirements {
+                target: target.clone(),
+                link_mode: if use_static { "static" } else { "dynamic" }.into(),
+                backends: [
+                    ("cpu", cfg!(feature = "cpu")),
+                    ("cuda", cfg!(feature = "cuda")),
+                    ("opencl", cfg!(feature = "opencl")),
+                    ("vulkan", cfg!(feature = "vulkan")),
+                    ("metal", cfg!(feature = "metal")),
+                ]
+                .into_iter()
+                .filter_map(|(name, enabled)| enabled.then(|| name.to_string()))
+                .collect(),
+                optional_modules: [
+                    ("image-process", cfg!(feature = "image-process")),
+                    ("module", cfg!(feature = "module")),
+                    ("runtime", cfg!(feature = "runtime")),
+                    ("llm", cfg!(feature = "llm")),
+                ]
+                .into_iter()
+                .filter_map(|(name, enabled)| enabled.then(|| name.to_string()))
+                .collect(),
+            };
+            let (lib, include) = prebuilt::acquire(&config, &requirements)
                 .unwrap_or_else(|message| panic!("MNN prebuilt acquisition failed: {message}"));
             (Some(lib), Some(include))
         }

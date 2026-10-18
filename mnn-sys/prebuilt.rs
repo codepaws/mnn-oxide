@@ -8,7 +8,18 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::build_config::PrebuiltConfig;
 
-pub fn acquire(config: &PrebuiltConfig, static_link: bool) -> Result<(PathBuf, PathBuf), String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactRequirements {
+    pub target: String,
+    pub link_mode: String,
+    pub backends: Vec<String>,
+    pub optional_modules: Vec<String>,
+}
+
+pub fn acquire(
+    config: &PrebuiltConfig,
+    requirements: &ArtifactRequirements,
+) -> Result<(PathBuf, PathBuf), String> {
     fs::create_dir_all(&config.cache_dir)
         .map_err(|e| format!("cannot create MNN_PREBUILT_CACHE_DIR: {e}"))?;
     let entry = config.cache_dir.join(&config.target).join(&config.version);
@@ -32,27 +43,150 @@ pub fn acquire(config: &PrebuiltConfig, static_link: bool) -> Result<(PathBuf, P
         let _ = fs::remove_dir_all(&extracted);
         return Err(error);
     }
+    if let Err(error) = validate_extracted_archive(&extracted, requirements) {
+        let _ = fs::remove_dir_all(&extracted);
+        return Err(error);
+    }
+    Ok((extracted.join("lib"), extracted.join("include")))
+}
+
+/// Validate the expected extracted archive layout and declared compatibility.
+pub fn validate_extracted_archive(
+    extracted: &Path,
+    requirements: &ArtifactRequirements,
+) -> Result<(), String> {
     let include = extracted.join("include");
     let library = extracted.join("lib");
     if !include.is_dir() || !library.is_dir() {
-        let _ = fs::remove_dir_all(&extracted);
         return Err(
             "prebuilt archive must contain include/ and lib/ directories at its root".into(),
         );
     }
     if !include.join("MNN").join("Interpreter.hpp").is_file() {
-        let _ = fs::remove_dir_all(&extracted);
         return Err("prebuilt include/ must contain MNN/Interpreter.hpp".into());
     }
-    if !contains_link_library(&library, &config.target, static_link) {
-        let _ = fs::remove_dir_all(&extracted);
+    if !contains_link_library(
+        &library,
+        &requirements.target,
+        requirements.link_mode == "static",
+    ) {
         return Err(format!(
             "prebuilt lib/ does not contain a recognized {} MNN library for {}",
-            if static_link { "static" } else { "dynamic" },
-            config.target
+            requirements.link_mode, requirements.target
         ));
     }
-    Ok((library, include))
+    validate_artifact_manifest(extracted, requirements)
+}
+
+/// Validate declared artifact compatibility and the presence of named notices.
+/// The manifest is publisher-supplied metadata: it does not inspect or prove
+/// the architecture, ABI, feature set, or provenance of the native binaries.
+pub fn validate_artifact_manifest(
+    artifact_root: &Path,
+    requirements: &ArtifactRequirements,
+) -> Result<(), String> {
+    let manifest_path = artifact_root.join("mnn-rs-artifact.json");
+    let bytes = fs::read(&manifest_path)
+        .map_err(|e| format!("prebuilt archive must contain mnn-rs-artifact.json: {e}"))?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid mnn-rs-artifact.json: {e}"))?;
+    let object = manifest
+        .as_object()
+        .ok_or_else(|| "mnn-rs-artifact.json must contain a JSON object".to_string())?;
+
+    let schema = object
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "artifact manifest schema_version must be an integer".to_string())?;
+    if schema != 1 {
+        return Err(format!(
+            "unsupported artifact manifest schema_version {schema}; supported version is 1"
+        ));
+    }
+
+    let string_field = |name: &str| -> Result<&str, String> {
+        object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| format!("artifact manifest requires non-empty string field `{name}`"))
+    };
+    let list_field = |name: &str| -> Result<Vec<&str>, String> {
+        let list = object
+            .get(name)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("artifact manifest requires array field `{name}`"))?;
+        list.iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|entry| !entry.trim().is_empty())
+                    .ok_or_else(|| {
+                        format!("artifact manifest `{name}` entries must be non-empty strings")
+                    })
+            })
+            .collect()
+    };
+
+    let _mnn_version = string_field("mnn_version")?;
+    let declared_target = string_field("target")?;
+    if declared_target != requirements.target {
+        return Err(format!(
+            "artifact manifest declares target `{declared_target}`, but Cargo target is `{}`",
+            requirements.target
+        ));
+    }
+    let declared_link_mode = string_field("link_mode")?;
+    if !matches!(declared_link_mode, "static" | "dynamic") {
+        return Err("artifact manifest `link_mode` must be `static` or `dynamic`".into());
+    }
+    if declared_link_mode != requirements.link_mode {
+        return Err(format!(
+            "artifact manifest declares `{declared_link_mode}` linking, but this build selected `{}`",
+            requirements.link_mode
+        ));
+    }
+
+    let declared_backends = list_field("backends")?;
+    let declared_modules = list_field("optional_modules")?;
+    for (kind, required, declared) in [
+        ("backend", &requirements.backends, &declared_backends),
+        (
+            "optional module",
+            &requirements.optional_modules,
+            &declared_modules,
+        ),
+    ] {
+        for name in required {
+            if !declared.contains(&name.as_str()) {
+                return Err(format!(
+                    "artifact manifest does not declare required {kind} `{name}`"
+                ));
+            }
+        }
+    }
+
+    let notice_files = list_field("notice_files")?;
+    if notice_files.is_empty() {
+        return Err(
+            "artifact manifest `notice_files` must name at least one license or notice file".into(),
+        );
+    }
+    for notice in notice_files {
+        let relative = Path::new(notice);
+        if !safe_relative_path(relative) {
+            return Err(format!(
+                "unsafe path in artifact manifest notice_files: `{notice}`"
+            ));
+        }
+        let full_path = artifact_root.join(relative);
+        if !full_path.is_file() {
+            return Err(format!(
+                "artifact manifest names missing license/notice file `{notice}`"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn contains_link_library(lib_dir: &Path, target: &str, static_link: bool) -> bool {
@@ -233,6 +367,20 @@ mod tests {
     use flate2::Compression;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn test_requirements() -> ArtifactRequirements {
+        ArtifactRequirements {
+            target: "x86_64-unknown-linux-gnu".into(),
+            link_mode: "static".into(),
+            backends: vec!["cpu".into()],
+            optional_modules: vec!["llm".into()],
+        }
+    }
+
+    fn write_manifest(root: &Path, json: &str) {
+        fs::write(root.join("mnn-rs-artifact.json"), json).unwrap();
+        fs::write(root.join("LICENSE-MNN"), "Apache-2.0 notice").unwrap();
+    }
+
     fn temp_path(label: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -339,6 +487,114 @@ mod tests {
         assert_eq!(
             fs::read(destination.join("lib/libMNN.a")).unwrap(),
             b"library"
+        );
+        let _ = fs::remove_file(archive);
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn artifact_manifest_accepts_matching_claims_and_existing_notice() {
+        let root = temp_path("manifest-valid");
+        fs::create_dir(&root).unwrap();
+        write_manifest(
+            &root,
+            r#"{
+                "schema_version": 1,
+                "mnn_version": "3.6.1",
+                "target": "x86_64-unknown-linux-gnu",
+                "link_mode": "static",
+                "backends": ["cpu", "cuda"],
+                "optional_modules": ["llm"],
+                "notice_files": ["LICENSE-MNN"]
+            }"#,
+        );
+        assert!(validate_artifact_manifest(&root, &test_requirements()).is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_manifest_rejects_unknown_schema_and_incompatible_claims() {
+        let root = temp_path("manifest-invalid");
+        fs::create_dir(&root).unwrap();
+        let requirements = test_requirements();
+        let valid = r#"{
+            "schema_version": 1,
+            "mnn_version": "3.6.1",
+            "target": "x86_64-unknown-linux-gnu",
+            "link_mode": "static",
+            "backends": ["cpu"],
+            "optional_modules": ["llm"],
+            "notice_files": ["LICENSE-MNN"]
+        }"#;
+        write_manifest(
+            &root,
+            &valid.replace("\"schema_version\": 1", "\"schema_version\": 2"),
+        );
+        assert!(validate_artifact_manifest(&root, &requirements)
+            .unwrap_err()
+            .contains("unsupported artifact manifest schema_version"));
+
+        for (json, expected_error) in [
+            (
+                valid.replace("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
+                "declares target",
+            ),
+            (
+                valid.replace("\"static\"", "\"dynamic\""),
+                "declares `dynamic` linking",
+            ),
+            (
+                valid.replace("\"cpu\"", "\"opencl\""),
+                "required backend `cpu`",
+            ),
+            (
+                valid.replace("\"llm\"", "\"module\""),
+                "required optional module `llm`",
+            ),
+        ] {
+            write_manifest(&root, &json);
+            assert!(validate_artifact_manifest(&root, &requirements)
+                .unwrap_err()
+                .contains(expected_error));
+        }
+
+        write_manifest(&root, &valid.replace("LICENSE-MNN", "missing/NOTICE.txt"));
+        assert!(validate_artifact_manifest(&root, &requirements)
+            .unwrap_err()
+            .contains("names missing license/notice file"));
+        write_manifest(&root, &valid.replace("LICENSE-MNN", "../NOTICE.txt"));
+        assert!(validate_artifact_manifest(&root, &requirements)
+            .unwrap_err()
+            .contains("unsafe path"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_manifest_is_required_after_archive_extraction() {
+        let archive = temp_path("manifest-archive.tar.gz");
+        let destination = temp_path("manifest-archive-out");
+        fs::create_dir(&destination).unwrap();
+        make_archive(
+            &archive,
+            &[
+                ("include/MNN/Interpreter.hpp", tar::EntryType::Regular, b"header"),
+                ("lib/libMNN.a", tar::EntryType::Regular, b"library"),
+                ("LICENSE-MNN", tar::EntryType::Regular, b"notice"),
+                (
+                    "mnn-rs-artifact.json",
+                    tar::EntryType::Regular,
+                    br#"{"schema_version":1,"mnn_version":"3.6.1","target":"x86_64-unknown-linux-gnu","link_mode":"static","backends":["cpu"],"optional_modules":["llm"],"notice_files":["LICENSE-MNN"]}"#,
+                ),
+            ],
+        );
+        extract_archive(&archive, &destination).unwrap();
+        assert!(validate_extracted_archive(&destination, &test_requirements()).is_ok());
+
+        fs::remove_file(destination.join("mnn-rs-artifact.json")).unwrap();
+        assert!(
+            validate_extracted_archive(&destination, &test_requirements())
+                .unwrap_err()
+                .contains("must contain mnn-rs-artifact.json")
         );
         let _ = fs::remove_file(archive);
         let _ = fs::remove_dir_all(destination);
