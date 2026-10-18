@@ -230,6 +230,32 @@ pub fn checkout_status_is_clean(status: &str) -> bool {
     status.is_empty()
 }
 
+/// MNN 3.x CUDA FetchContent creates its pinned CUTLASS checkout inside the
+/// source tree. Permit only that exact generated path and revision; all other
+/// tracked, untracked, or submodule changes remain rejected.
+pub fn checkout_status_is_clean_with_cutlass(
+    status: &str,
+    expected_cutlass_revision: Option<&str>,
+    actual_cutlass_revision: Option<&str>,
+) -> bool {
+    if checkout_status_is_clean(status) {
+        return true;
+    }
+
+    matches!(
+        (status, expected_cutlass_revision, actual_cutlass_revision),
+        (
+            "?? 3rd_party/cutlass/v2.9.0/\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25")
+        ) | (
+            "?? 3rd_party/cutlass/v4.0.0/\n",
+            Some("b995f933179c22d3fe0d871c3a53d11e4681950f"),
+            Some("b995f933179c22d3fe0d871c3a53d11e4681950f")
+        )
+    )
+}
+
 /// Parse `git ls-files --stage -z`, returning tracked paths and submodule flags.
 #[cfg(any(feature = "build-from-source", test))]
 pub fn parse_index_paths(output: &[u8]) -> Result<Vec<(std::path::PathBuf, bool)>, String> {
@@ -526,6 +552,36 @@ mod tests {
         assert!(checkout_status_is_clean(""));
         assert!(!checkout_status_is_clean(" M src/file.cpp\n"));
         assert!(!checkout_status_is_clean("?? local-input.cmake\n"));
+    }
+
+    #[test]
+    fn only_pinned_mnn_cuda_cutlass_fetch_is_allowed() {
+        assert!(checkout_status_is_clean_with_cutlass(
+            "?? 3rd_party/cutlass/v2.9.0/\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+        ));
+        assert!(checkout_status_is_clean_with_cutlass(
+            "?? 3rd_party/cutlass/v4.0.0/\n",
+            Some("b995f933179c22d3fe0d871c3a53d11e4681950f"),
+            Some("b995f933179c22d3fe0d871c3a53d11e4681950f"),
+        ));
+        assert!(checkout_status_is_clean_with_cutlass("", None, None));
+        assert!(!checkout_status_is_clean_with_cutlass(
+            "?? 3rd_party/cutlass/v2.9.0/\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("0000000000000000000000000000000000000000"),
+        ));
+        assert!(!checkout_status_is_clean_with_cutlass(
+            "?? 3rd_party/cutlass/v2.9.0/\n?? extra/\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+        ));
+        assert!(!checkout_status_is_clean_with_cutlass(
+            " M source/backend/cuda/CMakeLists.txt\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+        ));
     }
 
     #[test]

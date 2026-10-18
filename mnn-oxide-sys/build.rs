@@ -138,8 +138,54 @@ fn main() {
             .output()
             .expect("Could not inspect MNN_SOURCE_PATH working tree");
         let dirty = String::from_utf8_lossy(&status.stdout).into_owned();
-        if !status.status.success() || !build_config::checkout_status_is_clean(&dirty) {
-            panic!("MNN_SOURCE_PATH must be clean at the pinned commit; tracked, untracked, and submodule changes are rejected:\n{dirty}");
+        let (expected_cutlass_revision, cutlass_version) = if cfg!(feature = "cuda") {
+            if cfg!(feature = "llm") {
+                (
+                    Some("b995f933179c22d3fe0d871c3a53d11e4681950f"),
+                    Some("v4.0.0"),
+                )
+            } else {
+                (
+                    Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+                    Some("v2.9.0"),
+                )
+            }
+        } else {
+            (None, None)
+        };
+        let cutlass_path = cutlass_version.map(|version| {
+            PathBuf::from(source)
+                .join("3rd_party/cutlass")
+                .join(version)
+        });
+        let actual_cutlass_revision = cutlass_path.as_ref().and_then(|path| {
+            let revision = Command::new("git")
+                .args(["-C", path.to_str()?, "rev-parse", "HEAD"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())?;
+            let status = Command::new("git")
+                .args([
+                    "-C",
+                    path.to_str()?,
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                    "--ignore-submodules=none",
+                ])
+                .output()
+                .ok()?;
+            (status.status.success() && status.stdout.is_empty()).then_some(revision)
+        });
+        if !status.status.success()
+            || !build_config::checkout_status_is_clean_with_cutlass(
+                &dirty,
+                expected_cutlass_revision,
+                actual_cutlass_revision.as_deref(),
+            )
+        {
+            panic!("MNN_SOURCE_PATH must be at the pinned commit; modified files and unexpected untracked paths are rejected (only MNN's clean, pinned CUDA CUTLASS FetchContent checkout is permitted):\n{dirty}");
         }
         emit_source_rerun_paths(source);
     }
