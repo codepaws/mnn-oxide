@@ -11,21 +11,20 @@
 //! ```
 
 #[cfg(feature = "image-process")]
-use mnn_rs::{
-    imread, imwrite, resize,
-    ImreadFlags, ResizeFilter,
-};
+use mnn_oxide::{imread, imwrite, resize, ImreadFlags, ResizeFilter};
 
 #[cfg(feature = "image-process")]
-fn main() -> Result<(), mnn_rs::MnnError> {
+fn main() -> Result<(), mnn_oxide::MnnError> {
     use std::env;
 
     println!("=== MNN CV Image Codecs Example ===\n");
 
     // Get paths from command line
-    let input_path = env::args().nth(1)
+    let input_path = env::args()
+        .nth(1)
         .unwrap_or_else(|| "input.jpg".to_string());
-    let output_path = env::args().nth(2)
+    let output_path = env::args()
+        .nth(2)
         .unwrap_or_else(|| "output_resized.png".to_string());
 
     println!("[Step 1] Reading image using MNN CV::imread");
@@ -38,7 +37,7 @@ fn main() -> Result<(), mnn_rs::MnnError> {
     // Get image info
     let shape = img.shape();
     println!("  Shape: {:?}", shape);
-    println!("  Dtype: {}", img.dtype());
+    println!("  Dtype: {}", img.dtype()?);
     println!("  Element count: {}", img.element_count()?);
 
     // Try reading as u8 (imread returns uint8 tensor)

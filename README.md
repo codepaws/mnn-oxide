@@ -1,12 +1,14 @@
-# mnn-rs
+# mnn-oxide
 
-[![License](https://img.shields.io/crates/l/mnn-rs.svg)](https://github.com/codepaws/mnn-rs#license)
+[![License](https://img.shields.io/crates/l/mnn-oxide.svg)](https://github.com/codepaws/mnn-oxide#license)
 
 Rust bindings for [MNN](https://github.com/alibaba/MNN) (Mobile Neural Network), Alibaba's efficient and lightweight deep learning inference framework.
 
 ## Project lineage
 
 This Rust wrapper is derived from [wapznw/mnn-rs](https://github.com/wapznw/mnn-rs). The wrapped inference engine is [Alibaba MNN](https://github.com/alibaba/MNN).
+
+The workspace's minimum supported Rust version is 1.88.
 
 ## Features
 
@@ -15,7 +17,7 @@ This Rust wrapper is derived from [wapznw/mnn-rs](https://github.com/wapznw/mnn-
 - **Explicit native dependency**: Cargo never downloads, clones, or builds the MNN engine in its default configuration.
 - **Backend options**: CPU, CUDA, OpenCL, Vulkan, and Metal when present in the selected MNN library
 - **Static/Dynamic Linking**: Choose between static or dynamic linking
-- **Async Support**: Optional async API with Tokio integration
+- **Local async facade**: Optional async-compatible calls that keep native handles thread-confined; MNN work still blocks the polling thread
 - **LLM Support**: Run large language models (Qwen, Llama, ChatGLM, etc.) locally
 - **Build from Source**: Option to build MNN locally when needed
 
@@ -50,7 +52,7 @@ set MNN_INCLUDE_DIR=C:\path\to\mnn\include
 cargo build --no-default-features --features cpu,dynamic,system-mnn
 ```
 
-Prebuilt acquisition is opt-in and accepts only an artifact you supply: Cargo downloads it only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain the wrapper-required public headers (MNN/Interpreter.hpp, MNN/MNNDefine.h, MNN/MNNForwardType.h, MNN/Tensor.hpp, MNN/ImageProcess.hpp, and MNN/Matrix.h, plus feature-specific headers for LLM, modules, and runtime sharing), a root `lib/` directory with the selected link-mode library, and a root `mnn-rs-artifact.json` manifest. The manifest declares schema version, MNN version, target triple, link mode, backends, optional modules, and archive-relative license/notice files. The build rejects target or link-mode mismatches, missing required Cargo-feature declarations, and missing named notice files. These manifest values are publisher declarations, not verified binary facts: the binary architecture, ABI, MNN version, and feature contents are not inspected. SHA-256 verifies archive bytes, not publisher, provenance, license validity, or compatibility. You are responsible for confirming the artifact's provenance, license rights, and compatibility with your toolchain and runtime. This project does not publish or select a prebuilt MNN artifact. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Dynamic linking is selected by default; static linking requires disabling defaults and selecting `static` explicitly.
+Prebuilt acquisition is opt-in: Cargo downloads an artifact only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain the wrapper-required headers, a root `lib/` directory with the selected link-mode library, and an `mnn-oxide-artifact.json` manifest using schema version 2. The manifest declares source URL and commit, build options, toolchain, target, link mode, backends, optional modules, notices, and a per-file SHA-256 inventory. The build verifies the header release version, target/link mode, required feature declarations, notice presence, and that package files match the manifest inventory. These remain publisher claims: this crate does not inspect the native binary's architecture, ABI, symbols, or enabled feature contents, nor does it prove provenance, publisher identity, or legal sufficiency. File and archive hashes detect byte mismatches but do not attest how a binary was built. You are responsible for confirming artifact provenance, redistribution rights, and runtime compatibility. The local helper `scripts/package_mnn_artifact.py` prepares a manifest, copies upstream notices, and writes `SHA256SUMS`; inspect results before distribution. Tagged project releases currently publish bundles containing static MNN libraries for their listed targets and backends. Cargo does not automatically select or download those assets, and there is no dynamic-link release bundle yet. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Dynamic linking is selected by default; static linking requires disabling defaults and selecting `static` explicitly.
 
 To use a user-supplied prebuilt archive, set all five variables below. `MNN_PREBUILT_TARGET` must exactly match Cargo's target triple (for example, `x86_64-unknown-linux-gnu`), but it is not a binary architecture check; `MNN_PREBUILT_VERSION` is a cache label chosen by you. The cache stores the verified archive and re-extracts it safely on each build. Archive symlinks, hard links, special files, and paths escaping the archive root are rejected.
 
@@ -59,22 +61,24 @@ export MNN_PREBUILT_URL=https://example.invalid/path/to/your-mnn.tar.gz
 export MNN_PREBUILT_SHA256=REPLACE_WITH_64_HEX_CHARACTER_SHA256
 export MNN_PREBUILT_TARGET=x86_64-unknown-linux-gnu
 export MNN_PREBUILT_VERSION=3.6.1-your-build-label
-export MNN_PREBUILT_CACHE_DIR="$HOME/.cache/mnn-rs"
+export MNN_PREBUILT_CACHE_DIR="$HOME/.cache/mnn-oxide"
 cargo build --no-default-features --features cpu,static,use-prebuilt
 ```
 
 Replace the example URL and placeholder checksum with values from your own artifact source. The example is not a published release or a valid checksum; do not copy it literally.
 
-On MSVC, the C++ wrapper is compiled with the CRT matching the link mode:
-`/MT` for static MNN, `/MD` for dynamic MNN. If your MNN library was built
-with a different CRT, override it with `MNN_MSVC_RUNTIME=MT|MD`.
+On MSVC source builds, MNN and the C++ wrapper use the same CRT: `/MT` for
+static MNN by default and `/MD` for dynamic MNN. `MNN_MSVC_RUNTIME=MT|MD`
+overrides both selections. Static MNN linking can still use `/MD`; this is
+useful when the Rust application uses the dynamic CRT and avoids an MSVC
+`LNK4098` conflict.
 
 ## Usage
 
 ### Basic Inference
 
 ```rust
-use mnn_rs::{prelude::*, BackendType, ScheduleConfig};
+use mnn_oxide::{prelude::*, BackendType, ScheduleConfig};
 
 fn main() -> Result<(), MnnError> {
     // Load model
@@ -103,10 +107,15 @@ fn main() -> Result<(), MnnError> {
 }
 ```
 
-### Async Inference (with Tokio)
+### Local Async-Compatible Inference
+
+The optional `async` feature exposes async-compatible methods but executes MNN
+calls synchronously on the polling thread. It does not make MNN work
+non-blocking or move native handles across threads. For non-blocking inference,
+create an application-owned worker thread and pass it owned input/output data.
 
 ```rust
-use mnn_rs::{prelude::*, BackendType, ScheduleConfig};
+use mnn_oxide::{prelude::*, BackendType, ScheduleConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), MnnError> {
@@ -124,9 +133,9 @@ async fn main() -> Result<(), MnnError> {
 ### LLM Inference (requires `llm` feature)
 
 ```rust
-use mnn_rs::{ChatMessage, Llm};
+use mnn_oxide::{ChatMessage, Llm};
 
-fn main() -> Result<(), mnn_rs::MnnError> {
+fn main() -> Result<(), mnn_oxide::MnnError> {
     // config.json is produced by `transformers/llm/export/llmexport.py`
     let mut llm = Llm::create("model_dir/config.json")?;
     llm.load()?;
@@ -199,7 +208,7 @@ These Cargo features let the API represent and request a backend; they do not pr
 
 | Feature | Description |
 |---------|-------------|
-| `async` | Enable async API with Tokio |
+| `async` | Enable local async-compatible methods (native calls block the polling thread) |
 
 ### LLM Support
 
@@ -232,20 +241,21 @@ The LLM C++ engine (`MNN::Transformer::Llm` / `Embedding`) is merged into
 |---------|-------------|
 | `image-process` | Image processing support (requires MNN with the CV module) |
 | `module` | Dynamic computation graph support (MNN Expr/Module) |
-| `runtime` | Multi-session runtime sharing (MNN RuntimeManager) |
+| `runtime` | Multi-session runtime sharing through MNN `RuntimeInfo` |
 
 ## Examples
 
 See the `examples/` directory for more usage examples:
 
 - `basic_inference.rs` - Basic inference workflow
-- `async_inference.rs` - Async inference with Tokio
+- `async_inference.rs` - Local async-compatible inference (native calls block the polling thread)
 - `gpu_backend.rs` - Using GPU backends
 - `image_process.rs` - Image processing with MNN's CV module
 - `mnn_cv.rs` - OpenCV-style image operations
 - `llm_chat.rs` - Interactive multi-turn LLM chat
 - `llm_stream.rs` - Streaming LLM text generation
 - `llm_embedding.rs` - Text embedding and cosine similarity
+- `model_smoke.rs` - Deterministic CPU inference and output validation with the pinned PP-LCNet model
 
 Note: `async_inference` requires the `async` feature, `gpu_backend` requires
 the `cuda` feature, and the `llm_*` examples require the `llm` feature.
@@ -254,6 +264,25 @@ the `cuda` feature, and the `llm_*` examples require the `llm` feature.
 # Run basic inference example
 cargo run --example basic_inference -- /path/to/model.mnn
 ```
+
+To download the pinned Hugging Face MNN model, verify its SHA-256, and run the
+model smoke example, configure MNN using one of the acquisition modes above and
+run:
+
+```bash
+cargo run --example model_smoke --no-default-features --features cpu,static,build-from-source
+```
+
+On Windows/MSVC, set `MNN_MSVC_RUNTIME=MD` before this command when building
+MNN statically so its CRT matches Rust's MSVC runtime. The example downloads
+the pinned model on first use, verifies the SHA-256, and caches it under
+`target/test-models/`. Pass a model path as an argument or set `MNN_TEST_MODEL`
+to run a different local model; in that mode the example labels the result as
+custom, while the pinned qualification test still requires the pinned SHA-256.
+
+The model license, source revision, hash, and current platform/backend
+qualification status are recorded in
+[`docs/qualification/model-test-matrix.md`](docs/qualification/model-test-matrix.md).
 
 ## Cross-Compilation
 
@@ -351,6 +380,7 @@ cargo build --target x86_64-pc-windows-gnu --no-default-features --features cpu,
 |----------|-------------|
 | `MNN_SOURCE_PATH` | Existing MNN source checkout for explicit source builds |
 | `MNN_SOURCE_VERSION` | Full 40-character commit SHA matching `MNN_SOURCE_PATH` |
+| `MNN_CMAKE_GENERATOR` | Optional CMake generator override for source builds; defaults are selected for the target platform |
 | `MNN_PREBUILT_URL` | HTTPS URL for a user-supplied MNN `.tar.gz` archive; used only with `use-prebuilt` |
 | `MNN_PREBUILT_SHA256` | Expected 64-character hexadecimal SHA-256 of the exact archive bytes |
 | `MNN_PREBUILT_TARGET` | User-asserted artifact target label; must exactly match Cargo `TARGET` (the binary architecture/ABI is not inspected) |
@@ -359,18 +389,19 @@ cargo build --target x86_64-pc-windows-gnu --no-default-features --features cpu,
 | `MNN_LIB_DIR` | Path to pre-built MNN library |
 | `MNN_INCLUDE_DIR` | Path to MNN headers |
 | `MNN_DEBUG_BUILD` | Print debug information during build |
-| `MNN_MSVC_RUNTIME` | Override MSVC C runtime for the C++ wrapper: `MT` (static CRT) or `MD` (dynamic CRT). Defaults to `/MT` for static linking and `/MD` for dynamic linking |
+| `MNN_MSVC_RUNTIME` | Select MSVC C runtime for the source-built MNN library and C++ wrapper: `MT` (static CRT) or `MD` (dynamic CRT). Defaults to `/MT` for static MNN linking and `/MD` for dynamic MNN linking |
 | `CUDA_PATH` | CUDA installation path |
+| `MNN_OPENCL_LIB_DIR` | Optional Windows path containing `OpenCL.lib` when the OpenCL import library is outside the CUDA toolkit or Windows SDK paths |
 | `ANDROID_NDK_HOME` | Android NDK installation path |
 | `NDK_HOME` | Android NDK installation path (alternative to `ANDROID_NDK_HOME`) |
 
 ## API Documentation
 
-See [https://docs.rs/mnn-rs](https://docs.rs/mnn-rs) for full API documentation.
+See [https://docs.rs/mnn-oxide](https://docs.rs/mnn-oxide) for full API documentation.
 
 ## MNN Version
 
-No prebuilt MNN artifact is selected, published, or qualified by this crate. The `use-prebuilt` route accepts a user-supplied archive and verifies its checksum; the caller remains responsible for provenance, license rights, architecture/ABI compatibility, and native runtime behavior. Source builds are pinned to the exact commit SHA in `MNN_SOURCE_VERSION`.
+Tagged releases publish static MNN bundles; Cargo does not automatically select or download them. The `use-prebuilt` route requires an explicitly configured archive and verifies its package checksum; the caller remains responsible for provenance, license rights, architecture/ABI compatibility, and native runtime behavior. Source builds are pinned to the exact commit SHA in `MNN_SOURCE_VERSION`.
 
 ## License
 

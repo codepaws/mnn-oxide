@@ -7,7 +7,7 @@ use crate::backend::BackendType;
 use crate::error::{native_error, MnnError, MnnResult};
 use crate::interpreter::Interpreter;
 use crate::session::Session;
-use mnn_rs_sys::*;
+use mnn_oxide_sys::*;
 use std::sync::Arc;
 
 pub(crate) struct RuntimeHandle {
@@ -26,11 +26,21 @@ impl Drop for RuntimeHandle {
 ///
 /// The runtime manager allows multiple sessions to share backend resources,
 /// which can reduce memory usage and improve performance when running
-/// multiple models on the same device.
+/// multiple models on the same device. `RuntimeInfo` and sessions that use it
+/// remain confined to their owning thread unless a future MNN guarantee
+/// supports broader sharing.
+///
+/// Runtime handles are confined to their owning thread until MNN documents
+/// cross-thread guarantees for this API.
+///
+/// ```compile_fail,E0277
+/// fn require_send<T: Send>() {}
+/// require_send::<mnn_oxide::RuntimeInfo>();
+/// ```
 ///
 /// # Example
 /// ```no_run
-/// use mnn_rs::{BackendType, Interpreter, InterpreterRuntimeExt, RuntimeInfo};
+/// use mnn_oxide::{BackendType, Interpreter, InterpreterRuntimeExt, RuntimeInfo};
 ///
 /// // Create runtime manager for GPU
 /// let runtime = RuntimeInfo::new(BackendType::Auto, 4)?;
@@ -42,15 +52,11 @@ impl Drop for RuntimeHandle {
 /// // Create sessions sharing the same runtime
 /// let session1 = interpreter1.create_session_with_runtime(&runtime)?;
 /// let session2 = interpreter2.create_session_with_runtime(&runtime)?;
-/// # Ok::<(), mnn_rs::MnnError>(())
+/// # Ok::<(), mnn_oxide::MnnError>(())
 /// ```
 pub struct RuntimeInfo {
     inner: Arc<RuntimeHandle>,
 }
-
-// Safety: RuntimeManager is thread-safe through MNN's internal synchronization
-unsafe impl Send for RuntimeInfo {}
-unsafe impl Sync for RuntimeInfo {}
 
 impl RuntimeInfo {
     /// Create a new runtime manager.

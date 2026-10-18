@@ -8,7 +8,7 @@
 //! cargo run --example gpu_backend --features cuda -- /path/to/model.mnn
 //! ```
 
-use mnn_rs::{prelude::*, BackendType, MemoryMode, PrecisionMode, ScheduleConfig};
+use mnn_oxide::{prelude::*, BackendType, MemoryMode, PrecisionMode, ScheduleConfig};
 
 fn main() -> Result<(), MnnError> {
     // Get model path from command line
@@ -25,11 +25,7 @@ fn main() -> Result<(), MnnError> {
     #[cfg(all(not(feature = "cuda"), feature = "opencl"))]
     let backend_type = BackendType::OpenCL;
 
-    #[cfg(all(
-        not(feature = "cuda"),
-        not(feature = "opencl"),
-        feature = "vulkan"
-    ))]
+    #[cfg(all(not(feature = "cuda"), not(feature = "opencl"), feature = "vulkan"))]
     let backend_type = BackendType::Vulkan;
 
     #[cfg(all(
@@ -51,15 +47,15 @@ fn main() -> Result<(), MnnError> {
     let availability = backend_type.availability();
     println!("\nSelected backend: {} ({availability:?})", backend_type);
     match availability {
-        mnn_rs::BackendAvailability::Unavailable => {
+        mnn_oxide::BackendAvailability::Unavailable => {
             return Err(MnnError::backend_not_available(backend_type.name()));
         }
-        mnn_rs::BackendAvailability::Unknown => {
+        mnn_oxide::BackendAvailability::Unknown => {
             println!(
                 "Native backend probing is not implemented; attempting the explicit selection without fallback."
             );
         }
-        mnn_rs::BackendAvailability::Available => {}
+        mnn_oxide::BackendAvailability::Available => {}
     }
 
     // Create interpreter

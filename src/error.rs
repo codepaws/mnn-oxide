@@ -143,7 +143,7 @@ pub type MnnResult<T> = Result<T, MnnError>;
 pub(crate) fn native_error(context: &str, fallback: MnnError) -> MnnError {
     // SAFETY: the shim returns either null or a thread-local, NUL-terminated
     // message that remains valid until the next guarded call on this thread.
-    let message = unsafe { mnn_rs_sys::mnn_last_error() };
+    let message = unsafe { mnn_oxide_sys::mnn_last_error() };
     if message.is_null() {
         return fallback;
     }
@@ -224,10 +224,7 @@ impl MnnError {
 
     /// Check if this is a model error
     pub fn is_model_error(&self) -> bool {
-        matches!(
-            self,
-            MnnError::InvalidModel(_) | MnnError::ModelNotFound(_)
-        )
+        matches!(self, MnnError::InvalidModel(_) | MnnError::ModelNotFound(_))
     }
 
     /// Check if this is a backend error

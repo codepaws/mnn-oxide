@@ -17,7 +17,12 @@
 #include <ostream>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <vector>
+
+static_assert(
+    std::is_nothrow_destructible<MNN::Transformer::Llm>::value,
+    "MNN Llm destruction must remain non-throwing for the C ABI boundary");
 
 /* ============================================================================
  * Internal Helpers
@@ -136,7 +141,7 @@ struct MNNEmbeddingHandle {
  * ============================================================================ */
 
 MNNLlm* mnn_llm_create(const char* config_path) {
-    return mnn_rs_abi::with_c_boundary<MNNLlm*>(nullptr, [&]() -> MNNLlm* {
+    return mnn_oxide_abi::with_c_boundary<MNNLlm*>(nullptr, [&]() -> MNNLlm* {
         if (config_path == nullptr) {
             return nullptr;
         }
@@ -150,7 +155,7 @@ MNNLlm* mnn_llm_create(const char* config_path) {
 }
 
 void mnn_llm_destroy(MNNLlm* llm) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (llm == nullptr) {
             return;
         }
@@ -170,7 +175,7 @@ void mnn_llm_destroy(MNNLlm* llm) {
 }
 
 bool mnn_llm_load(MNNLlm* llm) {
-    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+    return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
         if (llm == nullptr) {
             return false;
         }
@@ -187,7 +192,7 @@ bool mnn_llm_load(MNNLlm* llm) {
  * ============================================================================ */
 
 char* mnn_llm_response_text(MNNLlm* llm, const char* text, int max_new_tokens) {
-    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+    return mnn_oxide_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
         if (llm == nullptr || text == nullptr) {
             return nullptr;
         }
@@ -204,7 +209,7 @@ char* mnn_llm_response_text(MNNLlm* llm, const char* text, int max_new_tokens) {
 char* mnn_llm_response_messages(MNNLlm* llm, const char* const* roles,
                                 const char* const* contents, int n,
                                 int max_new_tokens) {
-    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+    return mnn_oxide_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
         if (llm == nullptr) {
             return nullptr;
         }
@@ -228,7 +233,7 @@ char* mnn_llm_response_messages(MNNLlm* llm, const char* const* roles,
 
 int mnn_llm_generate_tokens(MNNLlm* llm, const int* input_ids, int n,
                             int max_new_tokens, int* out, int* out_n) {
-    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
         if (llm == nullptr || input_ids == nullptr || n <= 0 || out == nullptr ||
             out_n == nullptr) {
             return -1;
@@ -259,7 +264,7 @@ int mnn_llm_generate_tokens(MNNLlm* llm, const int* input_ids, int n,
 
 void mnn_llm_generate_init(MNNLlm* llm, const char* text, mnn_llm_text_cb cb,
                            void* userdata, const char* end_with) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (llm == nullptr || text == nullptr) {
             return;
         }
@@ -283,7 +288,7 @@ void mnn_llm_generate_init(MNNLlm* llm, const char* text, mnn_llm_text_cb cb,
 }
 
 bool mnn_llm_generate_step(MNNLlm* llm, int max_token) {
-    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+    return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
         if (llm == nullptr) {
             return false;
         }
@@ -297,7 +302,7 @@ bool mnn_llm_generate_step(MNNLlm* llm, int max_token) {
 }
 
 bool mnn_llm_stoped(MNNLlm* llm) {
-    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+    return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
         if (llm == nullptr) {
             return false;
         }
@@ -314,7 +319,7 @@ bool mnn_llm_stoped(MNNLlm* llm) {
  * ============================================================================ */
 
 int* mnn_llm_tokenizer_encode(MNNLlm* llm, const char* text, int* out_n) {
-    return mnn_rs_abi::with_c_boundary<int*>(nullptr, [&]() -> int* {
+    return mnn_oxide_abi::with_c_boundary<int*>(nullptr, [&]() -> int* {
         if (out_n != nullptr) {
             *out_n = 0;
         }
@@ -341,7 +346,7 @@ int* mnn_llm_tokenizer_encode(MNNLlm* llm, const char* text, int* out_n) {
 }
 
 char* mnn_llm_tokenizer_decode(MNNLlm* llm, int token) {
-    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+    return mnn_oxide_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
         if (llm == nullptr) {
             return nullptr;
         }
@@ -354,7 +359,7 @@ char* mnn_llm_tokenizer_decode(MNNLlm* llm, int token) {
 }
 
 bool mnn_llm_is_stop(MNNLlm* llm, int token) {
-    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+    return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
         if (llm == nullptr) {
             return false;
         }
@@ -371,7 +376,7 @@ bool mnn_llm_is_stop(MNNLlm* llm, int token) {
  * ============================================================================ */
 
 char* mnn_llm_apply_chat_template(MNNLlm* llm, const char* text) {
-    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+    return mnn_oxide_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
         if (llm == nullptr || text == nullptr) {
             return nullptr;
         }
@@ -386,7 +391,7 @@ char* mnn_llm_apply_chat_template(MNNLlm* llm, const char* text) {
 char* mnn_llm_apply_chat_template_messages(MNNLlm* llm,
                                            const char* const* roles,
                                            const char* const* contents, int n) {
-    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+    return mnn_oxide_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
         if (llm == nullptr) {
             return nullptr;
         }
@@ -403,7 +408,7 @@ char* mnn_llm_apply_chat_template_messages(MNNLlm* llm,
 }
 
 bool mnn_llm_set_config(MNNLlm* llm, const char* json) {
-    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+    return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
         if (llm == nullptr || json == nullptr) {
             return false;
         }
@@ -416,7 +421,7 @@ bool mnn_llm_set_config(MNNLlm* llm, const char* json) {
 }
 
 char* mnn_llm_dump_config(MNNLlm* llm) {
-    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+    return mnn_oxide_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
         if (llm == nullptr) {
             return nullptr;
         }
@@ -433,7 +438,7 @@ char* mnn_llm_dump_config(MNNLlm* llm) {
  * ============================================================================ */
 
 void mnn_llm_reset(MNNLlm* llm) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (llm == nullptr) {
             return;
         }
@@ -446,7 +451,7 @@ void mnn_llm_reset(MNNLlm* llm) {
 }
 
 bool mnn_llm_reuse_kv(MNNLlm* llm) {
-    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+    return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
         if (llm == nullptr) {
             return false;
         }
@@ -459,7 +464,7 @@ bool mnn_llm_reuse_kv(MNNLlm* llm) {
 }
 
 int mnn_llm_get_status(MNNLlm* llm) {
-    return mnn_rs_abi::with_c_boundary<int>(-2, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(-2, [&]() -> int {
         if (llm == nullptr) {
             return -2;
         }
@@ -476,7 +481,7 @@ int mnn_llm_get_status(MNNLlm* llm) {
 }
 
 int mnn_llm_get_context(MNNLlm* llm, MNNLlmContext* out) {
-    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
         if (llm == nullptr || out == nullptr) {
             return -1;
         }
@@ -504,13 +509,13 @@ int mnn_llm_get_context(MNNLlm* llm, MNNLlmContext* out) {
  * ============================================================================ */
 
 void mnn_string_free(char* s) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         free(s);
     });
 }
 
 void mnn_int_array_free(int* p) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         free(p);
     });
 }
@@ -520,7 +525,7 @@ void mnn_int_array_free(int* p) {
  * ============================================================================ */
 
 MNNEmbedding* mnn_embedding_create(const char* config_path, bool load) {
-    return mnn_rs_abi::with_c_boundary<MNNEmbedding*>(nullptr, [&]() -> MNNEmbedding* {
+    return mnn_oxide_abi::with_c_boundary<MNNEmbedding*>(nullptr, [&]() -> MNNEmbedding* {
         if (config_path == nullptr) {
             return nullptr;
         }
@@ -535,22 +540,21 @@ MNNEmbedding* mnn_embedding_create(const char* config_path, bool load) {
 }
 
 void mnn_embedding_destroy(MNNEmbedding* embedding) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (embedding == nullptr) {
             return;
         }
-        MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
+        std::unique_ptr<MNNEmbeddingHandle> handle(reinterpret_cast<MNNEmbeddingHandle*>(embedding));
         if (handle->emb != nullptr) {
             // Embedding derives from Llm, so the static Llm::destroy must be used.
             MNN::Transformer::Llm::destroy(handle->emb);
             handle->emb = nullptr;
         }
-        delete handle;
     });
 }
 
 int mnn_embedding_dim(MNNEmbedding* embedding) {
-    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
         if (embedding == nullptr) {
             return -1;
         }
@@ -564,7 +568,7 @@ int mnn_embedding_dim(MNNEmbedding* embedding) {
 
 int mnn_embedding_txt(MNNEmbedding* embedding, const char* text, float* out,
                       int out_cap) {
-    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
         if (embedding == nullptr || text == nullptr || out == nullptr ||
             out_cap <= 0) {
             return -1;
@@ -580,7 +584,7 @@ int mnn_embedding_txt(MNNEmbedding* embedding, const char* text, float* out,
 
 int mnn_embedding_ids(MNNEmbedding* embedding, const int* ids, int n, float* out,
                       int out_cap) {
-    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
         if (embedding == nullptr || ids == nullptr || n <= 0 || out == nullptr ||
             out_cap <= 0) {
             return -1;

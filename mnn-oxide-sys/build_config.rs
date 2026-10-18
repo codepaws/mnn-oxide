@@ -133,6 +133,61 @@ pub fn revision_matches(requested: &str, actual: &str) -> bool {
     is_full_commit_sha(requested) && actual.eq_ignore_ascii_case(requested)
 }
 
+/// Return the MNN library filename emitted by CMake for a target OS and link mode.
+pub fn native_library_file_name(
+    target_os: &str,
+    target_env: &str,
+    use_static: bool,
+) -> &'static str {
+    match target_os {
+        "windows" if target_env == "gnu" && use_static => "libMNN.a",
+        "windows" if target_env == "gnu" => "libMNN.dll.a",
+        "windows" => "MNN.lib",
+        "macos" if !use_static => "libMNN.dylib",
+        _ if use_static => "libMNN.a",
+        _ => "libMNN.so",
+    }
+}
+
+/// Return MNN's case-sensitive CMake target name used by native linkers.
+pub fn native_link_name() -> &'static str {
+    "MNN"
+}
+
+/// Check for the exact case-sensitive library filename selected by the
+/// linker configuration. Windows dynamic artifacts also need the DLL.
+#[cfg(any(feature = "use-prebuilt", test))]
+pub fn native_library_present(lib_dir: &std::path::Path, target: &str, static_link: bool) -> bool {
+    let windows = target.contains("windows");
+    let target_env = if windows && target.contains("gnu") {
+        "gnu"
+    } else if windows {
+        "msvc"
+    } else {
+        "gnu"
+    };
+    let target_os = if windows {
+        "windows"
+    } else if target.contains("apple") || target.contains("darwin") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let library = native_library_file_name(target_os, target_env, static_link);
+    lib_dir.join(library).is_file()
+        && (static_link || !windows || lib_dir.join("MNN.dll").is_file())
+}
+
+/// Whether a directory can satisfy MSVC's OpenCL import-library link.
+pub fn opencl_import_library_exists(directory: &std::path::Path) -> bool {
+    directory.join("OpenCL.lib").is_file()
+}
+
+/// Keep MNN's public symbols in one library for the wrapper's single-link contract.
+pub fn source_build_layout_args() -> [&'static str; 1] {
+    ["-DMNN_SEP_BUILD=OFF"]
+}
+
 pub fn checkout_status_is_clean(status: &str) -> bool {
     status.is_empty()
 }
@@ -303,6 +358,89 @@ mod tests {
             pin,
             "1123456789abcdef0123456789abcdef01234567"
         ));
+    }
+
+    #[test]
+    fn native_mnn_library_names_match_cmake_outputs_and_link_mode() {
+        assert_eq!(native_library_file_name("linux", "gnu", false), "libMNN.so");
+        assert_eq!(native_library_file_name("linux", "gnu", true), "libMNN.a");
+        assert_eq!(native_library_file_name("macos", "", false), "libMNN.dylib");
+        assert_eq!(native_library_file_name("macos", "", true), "libMNN.a");
+        assert_eq!(
+            native_library_file_name("windows", "msvc", false),
+            "MNN.lib"
+        );
+        assert_eq!(native_library_file_name("windows", "msvc", true), "MNN.lib");
+        assert_eq!(native_library_file_name("windows", "gnu", true), "libMNN.a");
+        assert_eq!(
+            native_library_file_name("windows", "gnu", false),
+            "libMNN.dll.a"
+        );
+        assert_eq!(native_link_name(), "MNN");
+    }
+
+    #[test]
+    fn prebuilt_library_presence_requires_the_case_sensitive_link_name() {
+        // Windows filesystems normally treat these names as identical. The
+        // filename contract itself is tested cross-platform above; exercise
+        // case-sensitive path rejection only where the filesystem supports it.
+        if cfg!(windows) {
+            assert_eq!(native_library_file_name("linux", "gnu", true), "libMNN.a");
+            assert_eq!(native_library_file_name("linux", "gnu", false), "libMNN.so");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "mnn-oxide-link-name-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("libmnn.a"), b"fixture").unwrap();
+        std::fs::write(root.join("libmnn.so"), b"fixture").unwrap();
+        assert!(!native_library_present(
+            &root,
+            "x86_64-unknown-linux-gnu",
+            true
+        ));
+        assert!(!native_library_present(
+            &root,
+            "x86_64-unknown-linux-gnu",
+            false
+        ));
+        std::fs::write(root.join("libMNN.a"), b"fixture").unwrap();
+        std::fs::write(root.join("libMNN.so"), b"fixture").unwrap();
+        assert!(native_library_present(
+            &root,
+            "x86_64-unknown-linux-gnu",
+            true
+        ));
+        assert!(native_library_present(
+            &root,
+            "x86_64-unknown-linux-gnu",
+            false
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_build_uses_one_shared_library_for_wrapper_symbols() {
+        assert!(source_build_layout_args().contains(&"-DMNN_SEP_BUILD=OFF"));
+    }
+
+    #[test]
+    fn opencl_import_library_directory_must_contain_the_msvc_import_library() {
+        let root = std::env::temp_dir().join(format!(
+            "mnn-oxide-opencl-lib-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(!opencl_import_library_exists(&root));
+        std::fs::write(root.join("OpenCL.lib"), b"fixture").unwrap();
+        assert!(opencl_import_library_exists(&root));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

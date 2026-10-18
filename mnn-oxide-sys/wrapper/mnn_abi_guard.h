@@ -2,14 +2,14 @@
  * Internal helpers for keeping C++ exceptions inside the MNN C ABI shim.
  * This file is part of the Rust wrapper; it does not alter MNN licensing.
  */
-#ifndef MNN_RS_ABI_GUARD_H
-#define MNN_RS_ABI_GUARD_H
+#ifndef MNN_OXIDE_ABI_GUARD_H
+#define MNN_OXIDE_ABI_GUARD_H
 
 #include <exception>
 #include <string>
 #include <utility>
 
-namespace mnn_rs_abi {
+namespace mnn_oxide_abi {
 
 inline std::string& last_error() {
     static thread_local std::string value;
@@ -67,6 +67,6 @@ void with_c_boundary_void(Function&& function) noexcept {
     }
 }
 
-}  // namespace mnn_rs_abi
+}  // namespace mnn_oxide_abi
 
-#endif  // MNN_RS_ABI_GUARD_H
+#endif  // MNN_OXIDE_ABI_GUARD_H

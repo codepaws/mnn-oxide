@@ -5,7 +5,7 @@
 
 use crate::error::{native_error, MnnError, MnnResult};
 use crate::tensor::Tensor;
-use mnn_rs_sys::*;
+use mnn_oxide_sys::*;
 use std::ffi::c_void;
 
 /// Image format for preprocessing.
@@ -70,13 +70,144 @@ impl ImageFormat {
     pub fn channels(&self) -> i32 {
         match self {
             ImageFormat::Rgba | ImageFormat::Bgra => 4,
-            ImageFormat::Rgb | ImageFormat::Bgr | ImageFormat::YCrCb | ImageFormat::Yuv
-            | ImageFormat::Hsv | ImageFormat::HsvFull | ImageFormat::Xyz => 3,
+            ImageFormat::Rgb
+            | ImageFormat::Bgr
+            | ImageFormat::YCrCb
+            | ImageFormat::Yuv
+            | ImageFormat::Hsv
+            | ImageFormat::HsvFull
+            | ImageFormat::Xyz => 3,
             ImageFormat::Gray => 1,
             ImageFormat::Bgr555 | ImageFormat::Bgr565 => 2, // stored as 2 bytes
             ImageFormat::YuvNv21 | ImageFormat::YuvNv12 | ImageFormat::YuvI420 => 1, // planar, 1 byte per pixel for Y
         }
     }
+}
+
+fn checked_image_buffer_len(
+    format: ImageFormat,
+    width: i32,
+    height: i32,
+    stride: i32,
+) -> MnnResult<usize> {
+    if width <= 0 || height <= 0 || stride < 0 {
+        return Err(MnnError::InvalidInput(
+            "Image width and height must be positive and stride cannot be negative".into(),
+        ));
+    }
+
+    let width = width as usize;
+    let height = height as usize;
+    let requested_stride = stride as usize;
+    let ceil_half = |value: usize| value / 2 + value % 2;
+
+    let total = match format {
+        ImageFormat::YuvNv21 | ImageFormat::YuvNv12 => {
+            let row_stride = if stride == 0 { width } else { requested_stride };
+            if row_stride < width {
+                return Err(MnnError::InvalidInput(
+                    "YUV row stride must be at least the image width".into(),
+                ));
+            }
+            // MNN reads interleaved UV pairs. Odd widths therefore require an
+            // even UV row width; an explicit stride must include that padding.
+            let uv_row_stride = if stride == 0 {
+                ceil_half(width).checked_mul(2)
+            } else if row_stride < ceil_half(width).saturating_mul(2) {
+                return Err(MnnError::InvalidInput(
+                    "NV12/NV21 stride must fit the interleaved chroma row".into(),
+                ));
+            } else {
+                Some(row_stride)
+            }
+            .ok_or_else(|| MnnError::InvalidInput("Image row size overflow".into()))?;
+            row_stride.checked_mul(height).and_then(|luma| {
+                uv_row_stride
+                    .checked_mul(ceil_half(height))
+                    .and_then(|chroma| luma.checked_add(chroma))
+            })
+        }
+        ImageFormat::YuvI420 => {
+            // MNN's copy path ignores the supplied stride while its nearest
+            // path treats it as both luma and chroma stride. Reject the
+            // ambiguous layout instead of guessing at the backing-buffer size.
+            if stride != 0 {
+                return Err(MnnError::InvalidInput(
+                    "Explicit stride is not supported for I420 input".into(),
+                ));
+            }
+            let row_stride = if stride == 0 { width } else { requested_stride };
+            if row_stride < width {
+                return Err(MnnError::InvalidInput(
+                    "I420 row stride must be at least the image width".into(),
+                ));
+            }
+            let chroma_stride = ceil_half(row_stride);
+            row_stride.checked_mul(height).and_then(|luma| {
+                chroma_stride
+                    .checked_mul(ceil_half(height))
+                    .and_then(|plane| plane.checked_mul(2))
+                    .and_then(|chroma| luma.checked_add(chroma))
+            })
+        }
+        _ => {
+            let bytes_per_pixel = match format {
+                ImageFormat::Rgba | ImageFormat::Bgra => 4,
+                ImageFormat::Rgb
+                | ImageFormat::Bgr
+                | ImageFormat::YCrCb
+                | ImageFormat::Yuv
+                | ImageFormat::Hsv
+                | ImageFormat::HsvFull
+                | ImageFormat::Xyz => 3,
+                ImageFormat::Bgr555 | ImageFormat::Bgr565 => 2,
+                ImageFormat::Gray => 1,
+                ImageFormat::YuvNv21 | ImageFormat::YuvNv12 | ImageFormat::YuvI420 => {
+                    unreachable!()
+                }
+            };
+            let minimum_stride = width
+                .checked_mul(bytes_per_pixel)
+                .ok_or_else(|| MnnError::InvalidInput("Image row size overflow".into()))?;
+            let row_stride = if stride == 0 {
+                minimum_stride
+            } else {
+                requested_stride
+            };
+            if row_stride < minimum_stride {
+                return Err(MnnError::InvalidInput(
+                    "Image row stride is smaller than the pixel row".into(),
+                ));
+            }
+            row_stride.checked_mul(height)
+        }
+    }
+    .ok_or_else(|| MnnError::InvalidInput("Image buffer size overflow".into()))?;
+
+    if total > i32::MAX as usize {
+        return Err(MnnError::InvalidInput(
+            "Image buffer exceeds MNN's supported byte-size limit".into(),
+        ));
+    }
+    Ok(total)
+}
+
+fn checked_image_tensor_len(width: i32, height: i32, bytes_per_pixel: i32) -> MnnResult<usize> {
+    if width <= 0 || height <= 0 || bytes_per_pixel <= 0 {
+        return Err(MnnError::InvalidInput(
+            "Image tensor dimensions and bytes per pixel must be positive".into(),
+        ));
+    }
+    let bytes = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(bytes_per_pixel as usize))
+        .ok_or_else(|| MnnError::InvalidInput("Image tensor size overflow".into()))?;
+    if bytes > i32::MAX as usize {
+        return Err(MnnError::InvalidInput(
+            "Image tensor exceeds MNN's supported byte-size limit".into(),
+        ));
+    }
+    Ok(bytes)
 }
 
 /// Filter type for image scaling.
@@ -244,16 +375,19 @@ impl ImageConfig {
 ///
 /// ```compile_fail
 /// fn requires_clone<T: Clone>() {}
-/// requires_clone::<mnn_rs::Matrix>();
+/// requires_clone::<mnn_oxide::Matrix>();
+/// ```
+///
+/// Native matrix handles remain on their owning thread.
+///
+/// ```compile_fail,E0277
+/// fn require_send<T: Send>() {}
+/// require_send::<mnn_oxide::Matrix>();
 /// ```
 #[derive(Debug)]
 pub struct Matrix {
     inner: *mut MNNMatrix,
 }
-
-// Safety: Matrix operations are thread-safe
-unsafe impl Send for Matrix {}
-unsafe impl Sync for Matrix {}
 
 impl Matrix {
     /// Create an identity matrix.
@@ -400,7 +534,7 @@ impl Drop for Matrix {
 ///
 /// # Example
 /// ```no_run
-/// use mnn_rs::{ImageProcess, ImageConfig, ImageFormat, Filter};
+/// use mnn_oxide::{ImageProcess, ImageConfig, ImageFormat, Filter};
 ///
 /// // Create config for RGB image with normalization
 /// let config = ImageConfig::new()
@@ -415,15 +549,19 @@ impl Drop for Matrix {
 /// // Convert image data to tensor
 /// // let image_data: &[u8] = ...;
 /// // processor.convert(image_data, width, height, &mut tensor)?;
-/// # Ok::<(), mnn_rs::MnnError>(())
+/// # Ok::<(), mnn_oxide::MnnError>(())
+/// ```
+///
+/// Image processors remain on their owning thread.
+///
+/// ```compile_fail,E0277
+/// fn require_send<T: Send>() {}
+/// require_send::<mnn_oxide::ImageProcess>();
 /// ```
 pub struct ImageProcess {
     inner: *mut MNNImageProcess,
+    source_format: ImageFormat,
 }
-
-// Safety: ImageProcess operations are thread-safe
-unsafe impl Send for ImageProcess {}
-unsafe impl Sync for ImageProcess {}
 
 impl ImageProcess {
     /// Create a new image processor with the given configuration.
@@ -438,7 +576,10 @@ impl ImageProcess {
             ));
         }
 
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            source_format: config.source_format,
+        })
     }
 
     /// Set the transformation matrix.
@@ -466,13 +607,13 @@ impl ImageProcess {
     ///
     /// # Example
     /// ```no_run
-    /// # use mnn_rs::{ImageProcess, ImageConfig};
+    /// # use mnn_oxide::{ImageProcess, ImageConfig};
     /// # let processor = ImageProcess::new(&ImageConfig::default())?;
-    /// # let mut tensor: mnn_rs::Tensor = unsafe { std::mem::zeroed() };
+    /// # let mut tensor: mnn_oxide::Tensor = unsafe { std::mem::zeroed() };
     /// // Assuming a 224x224 RGB image
     /// let image_data: &[u8] = &[0u8; 224 * 224 * 3];
     /// processor.convert(image_data, 224, 224, 0, &mut tensor)?;
-    /// # Ok::<(), mnn_rs::MnnError>(())
+    /// # Ok::<(), mnn_oxide::MnnError>(())
     /// ```
     pub fn convert(
         &self,
@@ -482,8 +623,13 @@ impl ImageProcess {
         stride: i32,
         tensor: &mut Tensor,
     ) -> MnnResult<()> {
-        if source.is_empty() {
-            return Err(MnnError::EmptyData);
+        let required = checked_image_buffer_len(self.source_format, width, height, stride)?;
+        if source.len() < required {
+            return Err(MnnError::InvalidInput(format!(
+                "Image source has {} bytes but the dimensions, format, and stride require at least {}",
+                source.len(),
+                required
+            )));
         }
 
         let result = unsafe {
@@ -530,10 +676,18 @@ impl ImageProcess {
         bpp: i32,
         data: Option<&[u8]>,
     ) -> MnnResult<Tensor> {
-        let data_ptr = match data {
-            Some(d) => d.as_ptr() as *mut c_void,
-            None => std::ptr::null_mut(),
-        };
+        let required = checked_image_tensor_len(width, height, bpp)?;
+        if let Some(data) = data {
+            if data.len() < required {
+                return Err(MnnError::InvalidInput(format!(
+                    "Image tensor data has {} bytes but {} are required",
+                    data.len(),
+                    required
+                )));
+            }
+        }
+
+        let data_ptr = data.map_or(std::ptr::null_mut(), |bytes| bytes.as_ptr() as *mut c_void);
 
         let inner = unsafe { mnn_image_tensor_create(width, height, bpp, data_ptr) };
 
@@ -589,16 +743,15 @@ pub enum ResizeFilter {
 ///
 /// # Example
 /// ```no_run
-/// use mnn_rs::imread;
+/// use mnn_oxide::imread;
 ///
 /// // Read as color image (BGR)
-/// let tensor = imread("image.jpg", mnn_rs::ImreadFlags::Color)?;
-/// # Ok::<(), mnn_rs::MnnError>(())
+/// let tensor = imread("image.jpg", mnn_oxide::ImreadFlags::Color)?;
+/// # Ok::<(), mnn_oxide::MnnError>(())
 /// ```
 pub fn imread<P: AsRef<std::path::Path>>(path: P, flags: ImreadFlags) -> MnnResult<Tensor> {
-    let path_cstr = std::ffi::CString::new(
-        path.as_ref().to_str().ok_or(MnnError::InvalidPath)?
-    ).map_err(|_| MnnError::InvalidPath)?;
+    let path_cstr = std::ffi::CString::new(path.as_ref().to_str().ok_or(MnnError::InvalidPath)?)
+        .map_err(|_| MnnError::InvalidPath)?;
 
     let inner = unsafe { mnn_imread(path_cstr.as_ptr(), flags as i32) };
 
@@ -625,16 +778,15 @@ pub fn imread<P: AsRef<std::path::Path>>(path: P, flags: ImreadFlags) -> MnnResu
 ///
 /// # Example
 /// ```no_run
-/// use mnn_rs::{imread, imwrite, ImreadFlags};
+/// use mnn_oxide::{imread, imwrite, ImreadFlags};
 ///
 /// let img = imread("input.jpg", ImreadFlags::Color)?;
 /// imwrite("output.png", &img)?;
-/// # Ok::<(), mnn_rs::MnnError>(())
+/// # Ok::<(), mnn_oxide::MnnError>(())
 /// ```
 pub fn imwrite<P: AsRef<std::path::Path>>(path: P, tensor: &Tensor) -> MnnResult<()> {
-    let path_cstr = std::ffi::CString::new(
-        path.as_ref().to_str().ok_or(MnnError::InvalidPath)?
-    ).map_err(|_| MnnError::InvalidPath)?;
+    let path_cstr = std::ffi::CString::new(path.as_ref().to_str().ok_or(MnnError::InvalidPath)?)
+        .map_err(|_| MnnError::InvalidPath)?;
 
     let result = unsafe { mnn_imwrite(path_cstr.as_ptr(), tensor.as_ptr(), std::ptr::null()) };
 
@@ -663,13 +815,18 @@ pub fn imwrite<P: AsRef<std::path::Path>>(path: P, tensor: &Tensor) -> MnnResult
 ///
 /// # Example
 /// ```no_run
-/// use mnn_rs::{imread, resize, ResizeFilter, ImreadFlags};
+/// use mnn_oxide::{imread, resize, ResizeFilter, ImreadFlags};
 ///
 /// let img = imread("image.jpg", ImreadFlags::Color)?;
 /// let resized = resize(&img, 224, 224, ResizeFilter::Bilinear)?;
-/// # Ok::<(), mnn_rs::MnnError>(())
+/// # Ok::<(), mnn_oxide::MnnError>(())
 /// ```
-pub fn resize(src: &Tensor, dst_width: i32, dst_height: i32, filter: ResizeFilter) -> MnnResult<Tensor> {
+pub fn resize(
+    src: &Tensor,
+    dst_width: i32,
+    dst_height: i32,
+    filter: ResizeFilter,
+) -> MnnResult<Tensor> {
     let filter_code = match filter {
         ResizeFilter::Nearest => 0,
         ResizeFilter::Bilinear => 1,
@@ -748,6 +905,42 @@ mod tests {
         assert_eq!(ImageFormat::Rgba.channels(), 4);
         assert_eq!(ImageFormat::Rgb.channels(), 3);
         assert_eq!(ImageFormat::Gray.channels(), 1);
+    }
+
+    #[test]
+    fn image_buffer_length_checks_packed_and_yuv_layouts() {
+        assert_eq!(
+            checked_image_buffer_len(ImageFormat::Rgb, 2, 3, 0).unwrap(),
+            18
+        );
+        assert_eq!(
+            checked_image_buffer_len(ImageFormat::Rgb, 2, 3, 8).unwrap(),
+            24
+        );
+        assert!(checked_image_buffer_len(ImageFormat::Rgb, 2, 3, 5).is_err());
+        assert_eq!(
+            checked_image_buffer_len(ImageFormat::YuvNv21, 4, 3, 0).unwrap(),
+            20
+        );
+        assert_eq!(
+            checked_image_buffer_len(ImageFormat::YuvNv12, 3, 3, 0).unwrap(),
+            17
+        );
+        assert!(checked_image_buffer_len(ImageFormat::YuvNv12, 3, 3, 3).is_err());
+        assert_eq!(
+            checked_image_buffer_len(ImageFormat::YuvNv12, 3, 3, 4).unwrap(),
+            20
+        );
+        assert_eq!(
+            checked_image_buffer_len(ImageFormat::YuvI420, 4, 3, 0).unwrap(),
+            20
+        );
+        assert!(checked_image_buffer_len(ImageFormat::YuvI420, 4, 3, 8).is_err());
+        assert!(checked_image_buffer_len(ImageFormat::Gray, 0, 3, 0).is_err());
+        assert!(checked_image_buffer_len(ImageFormat::Gray, i32::MAX, i32::MAX, 0).is_err());
+        assert_eq!(checked_image_tensor_len(3, 2, 4).unwrap(), 24);
+        assert!(checked_image_tensor_len(0, 2, 4).is_err());
+        assert!(checked_image_tensor_len(i32::MAX, i32::MAX, 4).is_err());
     }
 
     #[test]

@@ -41,7 +41,7 @@ REPLACEMENT = """IF(NOT NATIVE_INCLUDE_OUTPUT)
   set(NATIVE_INCLUDE_OUTPUT ".")
 ENDIF()
 IF(NOT MNN_SEP_BUILD)
-  # mnn-rs workaround for upstream MNN bug: `llm` is an OBJECT library when
+  # mnn-oxide workaround for upstream MNN bug: `llm` is an OBJECT library when
   # MNN_SEP_BUILD is OFF, and CMake forbids POST_BUILD on OBJECT libraries.
   # Copy headers at configure time instead.
   file(COPY ${CMAKE_CURRENT_LIST_DIR}/include/ DESTINATION ${NATIVE_INCLUDE_OUTPUT})

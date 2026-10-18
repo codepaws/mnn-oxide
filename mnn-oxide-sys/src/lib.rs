@@ -1,7 +1,7 @@
 //! Raw FFI bindings for MNN (Mobile Neural Network) inference engine.
 //!
 //! This crate provides unsafe raw bindings to the MNN C wrapper API.
-//! Users should prefer the safe `mnn-rs` crate instead.
+//! Users should prefer the safe `mnn-oxide` crate instead.
 //!
 //! # Safety
 //!
@@ -14,7 +14,18 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+// Exercise the pure acquisition/link configuration shared with build.rs.
+#[cfg(test)]
+#[path = "../build_config.rs"]
+mod build_config_tests;
+
 use std::os::raw::{c_char, c_int, c_void};
+
+/// Release version declared by the selected MNN headers at build time.
+///
+/// This identifies the header set used to compile the wrapper. It does not
+/// prove that the linked library was built from those headers.
+pub const SELECTED_HEADER_VERSION: &str = env!("MNN_SELECTED_HEADER_VERSION");
 
 // ============================================================================
 // Forward declarations (opaque handles)
@@ -151,7 +162,7 @@ extern "C" {
     /// Legacy availability stub: returns 1 for CPU and 0 for other backend
     /// types because native accelerator probing is not implemented. A zero
     /// result does not confirm that a backend is unavailable.
-    #[deprecated(note = "non-CPU availability is unprobed; use mnn-rs BackendAvailability")]
+    #[deprecated(note = "non-CPU availability is unprobed; use mnn-oxide BackendAvailability")]
     pub fn mnn_is_backend_available(type_: c_int) -> c_int;
 
     // ========================================================================
@@ -162,7 +173,10 @@ extern "C" {
     pub fn mnn_interpreter_create_from_file(file: *const c_char) -> *mut MNNInterpreter;
 
     /// Create interpreter from buffer
-    pub fn mnn_interpreter_create_from_buffer(buffer: *const c_void, size: usize) -> *mut MNNInterpreter;
+    pub fn mnn_interpreter_create_from_buffer(
+        buffer: *const c_void,
+        size: usize,
+    ) -> *mut MNNInterpreter;
 
     /// Destroy interpreter
     pub fn mnn_interpreter_destroy(interpreter: *mut MNNInterpreter);
@@ -273,7 +287,12 @@ extern "C" {
     ) -> c_int;
 
     /// Create image tensor
-    pub fn mnn_image_tensor_create(w: c_int, h: c_int, bpp: c_int, data: *mut c_void) -> *mut MNNTensor;
+    pub fn mnn_image_tensor_create(
+        w: c_int,
+        h: c_int,
+        bpp: c_int,
+        data: *mut c_void,
+    ) -> *mut MNNTensor;
 
     /// Destroy image tensor
     pub fn mnn_image_tensor_destroy(tensor: *mut MNNTensor);
@@ -282,10 +301,19 @@ extern "C" {
     pub fn mnn_imread(path: *const c_char, flags: c_int) -> *mut MNNTensor;
 
     /// Write image to file using MNN CV (requires MNN_IMGCODECS)
-    pub fn mnn_imwrite(path: *const c_char, tensor: *const MNNTensor, params: *const c_void) -> c_int;
+    pub fn mnn_imwrite(
+        path: *const c_char,
+        tensor: *const MNNTensor,
+        params: *const c_void,
+    ) -> c_int;
 
     /// Resize image tensor (requires MNN_BUILD_OPENCV)
-    pub fn mnn_resize(src: *const MNNTensor, dstWidth: c_int, dstHeight: c_int, filter: c_int) -> *mut MNNTensor;
+    pub fn mnn_resize(
+        src: *const MNNTensor,
+        dstWidth: c_int,
+        dstHeight: c_int,
+        filter: c_int,
+    ) -> *mut MNNTensor;
 
     // ========================================================================
     // Matrix Functions
@@ -388,19 +416,36 @@ extern "C" {
     pub fn mnn_interpreter_set_session_mode(interpreter: *mut MNNInterpreter, mode: c_int);
 
     /// Set cache file for optimization
-    pub fn mnn_interpreter_set_cache_file(interpreter: *mut MNNInterpreter, path: *const c_char, key_size: usize);
+    pub fn mnn_interpreter_set_cache_file(
+        interpreter: *mut MNNInterpreter,
+        path: *const c_char,
+        key_size: usize,
+    );
 
     /// Update cache from session
-    pub fn mnn_interpreter_update_cache(interpreter: *mut MNNInterpreter, session: *mut MNNSession) -> c_int;
+    pub fn mnn_interpreter_update_cache(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> c_int;
 
     /// Set external file for model
-    pub fn mnn_interpreter_set_external_file(interpreter: *mut MNNInterpreter, path: *const c_char, flag: usize);
+    pub fn mnn_interpreter_set_external_file(
+        interpreter: *mut MNNInterpreter,
+        path: *const c_char,
+        flag: usize,
+    );
 
     /// Get input tensor names
-    pub fn mnn_interpreter_get_input_names(interpreter: *mut MNNInterpreter, session: *mut MNNSession) -> MNNStringArray;
+    pub fn mnn_interpreter_get_input_names(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> MNNStringArray;
 
     /// Get output tensor names
-    pub fn mnn_interpreter_get_output_names(interpreter: *mut MNNInterpreter, session: *mut MNNSession) -> MNNStringArray;
+    pub fn mnn_interpreter_get_output_names(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> MNNStringArray;
 
     /// Free string array
     pub fn mnn_string_array_free(array: *mut MNNStringArray);
@@ -414,7 +459,10 @@ extern "C" {
     );
 
     /// Get session operator count
-    pub fn mnn_interpreter_get_session_op_count(interpreter: *mut MNNInterpreter, session: *mut MNNSession) -> c_int;
+    pub fn mnn_interpreter_get_session_op_count(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> c_int;
 }
 
 // ============================================================================

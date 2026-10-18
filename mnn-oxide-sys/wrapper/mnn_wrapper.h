@@ -369,13 +369,13 @@ int mnn_interpreter_get_session_op_count(MNNInterpreter* interpreter, MNNSession
  * Runtime Management (Multi-Session Sharing)
  * ============================================================================ */
 
-/** Opaque handle to MNN RuntimeManager */
+/** Opaque handle owning MNN Interpreter::RuntimeInfo for shared sessions. */
 typedef struct MNNRuntimeManagerHandle MNNRuntimeManager;
 
-/** Create runtime manager from config */
+/** Create shared runtime info from a backend configuration. */
 MNNRuntimeManager* mnn_runtime_manager_create(int type, int num_threads);
 
-/** Destroy runtime manager */
+/** Destroy shared runtime info. */
 void mnn_runtime_manager_destroy(MNNRuntimeManager* manager);
 
 /** Create session with shared runtime

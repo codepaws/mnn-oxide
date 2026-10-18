@@ -112,28 +112,29 @@ pub fn validate_extracted_archive(
 }
 
 /// Validate declared artifact compatibility and the presence of named notices.
-/// The manifest is publisher-supplied metadata: it does not inspect or prove
-/// the architecture, ABI, feature set, or provenance of the native binaries.
+/// The manifest is publisher-supplied metadata: the MNN release claim is checked
+/// against the selected public header, but no binary version, architecture, ABI,
+/// feature set, or provenance is inspected or proved here.
 pub fn validate_artifact_manifest(
     artifact_root: &Path,
     requirements: &ArtifactRequirements,
 ) -> Result<(), String> {
-    let manifest_path = artifact_root.join("mnn-rs-artifact.json");
+    let manifest_path = artifact_root.join("mnn-oxide-artifact.json");
     let bytes = fs::read(&manifest_path)
-        .map_err(|e| format!("prebuilt archive must contain mnn-rs-artifact.json: {e}"))?;
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| format!("invalid mnn-rs-artifact.json: {e}"))?;
+        .map_err(|e| format!("prebuilt archive must contain mnn-oxide-artifact.json: {e}"))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("invalid mnn-oxide-artifact.json: {e}"))?;
     let object = manifest
         .as_object()
-        .ok_or_else(|| "mnn-rs-artifact.json must contain a JSON object".to_string())?;
+        .ok_or_else(|| "mnn-oxide-artifact.json must contain a JSON object".to_string())?;
 
     let schema = object
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| "artifact manifest schema_version must be an integer".to_string())?;
-    if schema != 1 {
+    if schema != 2 {
         return Err(format!(
-            "unsupported artifact manifest schema_version {schema}; supported version is 1"
+            "unsupported artifact manifest schema_version {schema}; supported version is 2"
         ));
     }
 
@@ -161,7 +162,28 @@ pub fn validate_artifact_manifest(
             .collect()
     };
 
-    let _mnn_version = string_field("mnn_version")?;
+    let declared_mnn_version = string_field("mnn_version")?;
+    let source_url = string_field("source_url")?;
+    if !source_url.starts_with("https://") {
+        return Err("artifact manifest `source_url` must use HTTPS".into());
+    }
+    let source_commit = string_field("source_commit")?;
+    if source_commit.len() != 40 || !source_commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            "artifact manifest `source_commit` must be a full 40-character commit SHA".into(),
+        );
+    }
+    for field in ["build_options", "toolchain"] {
+        if !object.get(field).is_some_and(serde_json::Value::is_object) {
+            return Err(format!("artifact manifest `{field}` must be a JSON object"));
+        }
+    }
+    let header_mnn_version = read_mnn_header_version(artifact_root)?;
+    if declared_mnn_version != header_mnn_version {
+        return Err(format!(
+            "artifact manifest declares MNN version `{declared_mnn_version}`, but selected include/MNN/MNNDefine.h declares `{header_mnn_version}`"
+        ));
+    }
     let declared_target = string_field("target")?;
     if declared_target != requirements.target {
         return Err(format!(
@@ -219,45 +241,148 @@ pub fn validate_artifact_manifest(
             ));
         }
     }
+    validate_file_inventory(artifact_root, object)?;
     Ok(())
 }
 
-fn contains_link_library(lib_dir: &Path, target: &str, static_link: bool) -> bool {
-    let windows = target.contains("windows");
-    let darwin = target.contains("apple") || target.contains("darwin");
-    if windows {
-        let (import_names, dll_names) = if target.contains("gnu") {
-            (
-                &["libMNN.dll.a", "libmnn.dll.a"][..],
-                &["MNN.dll", "mnn.dll"][..],
-            )
-        } else {
-            (&["MNN.lib", "mnn.lib"][..], &["MNN.dll", "mnn.dll"][..])
-        };
-        if static_link {
-            let static_names: &[&str] = if target.contains("gnu") {
-                &["libMNN.a", "libmnn.a"]
-            } else {
-                &["MNN.lib", "mnn.lib"]
-            };
-            return static_names.iter().any(|name| lib_dir.join(name).is_file());
-        }
-        let has_import = import_names.iter().any(|name| lib_dir.join(name).is_file());
-        let has_dll = dll_names.iter().any(|name| lib_dir.join(name).is_file());
-        return has_import && has_dll;
+fn validate_file_inventory(
+    artifact_root: &Path,
+    manifest: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let declared = manifest
+        .get("files")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "artifact manifest `files` must be a path-to-SHA-256 object".to_string())?;
+    if declared.is_empty() {
+        return Err("artifact manifest `files` must not be empty".into());
     }
-    let names: &[&str] = if darwin {
-        if static_link {
-            &["libMNN.a", "libmnn.a"]
-        } else {
-            &["libMNN.dylib", "libmnn.dylib"]
+
+    let mut actual = std::collections::BTreeMap::new();
+    collect_artifact_files(artifact_root, artifact_root, &mut actual)?;
+    if actual.len() != declared.len() {
+        return Err(format!(
+            "artifact manifest file inventory has {} entries but package contains {} files",
+            declared.len(),
+            actual.len()
+        ));
+    }
+
+    for (name, value) in declared {
+        let path = Path::new(name);
+        if !safe_relative_path(path) {
+            return Err(format!("unsafe path in artifact manifest files: `{name}`"));
         }
-    } else if static_link {
-        &["libMNN.a", "libmnn.a"]
-    } else {
-        &["libMNN.so", "libmnn.so"]
-    };
-    names.iter().any(|name| lib_dir.join(name).is_file())
+        let expected = value
+            .as_str()
+            .ok_or_else(|| format!("artifact manifest file hash for `{name}` must be a string"))?;
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!(
+                "artifact manifest file hash for `{name}` must be a 64-character SHA-256"
+            ));
+        }
+        let digest = actual
+            .get(name)
+            .ok_or_else(|| format!("artifact manifest file `{name}` is missing from package"))?;
+        if !digest.eq_ignore_ascii_case(expected) {
+            return Err(format!(
+                "artifact manifest file hash does not match `{name}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_artifact_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(directory)
+        .map_err(|error| format!("cannot enumerate artifact files: {error}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read artifact entry: {error}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("cannot inspect artifact entry: {error}"))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "artifact contains unsupported symbolic link: {}",
+                path.display()
+            ));
+        }
+        if file_type.is_dir() {
+            collect_artifact_files(root, &path, files)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            return Err(format!(
+                "artifact contains unsupported special file: {}",
+                path.display()
+            ));
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "artifact file escaped artifact root".to_string())?;
+        let name = relative.to_string_lossy().replace('\\', "/");
+        if name == "mnn-oxide-artifact.json" || name == "SHA256SUMS" {
+            continue;
+        }
+        files.insert(name, sha256_file(&path)?);
+    }
+    Ok(())
+}
+
+/// Read MNN's release version from the numeric macros in its selected public header.
+/// This checks agreement between publisher metadata and headers only; it does not
+/// inspect or establish the version of the linked native library.
+fn read_mnn_header_version(artifact_root: &Path) -> Result<String, String> {
+    let path = artifact_root.join("include/MNN/MNNDefine.h");
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read selected MNN version header: {error}"))?;
+    let major = parse_numeric_define(&contents, "MNN_VERSION_MAJOR", &path)?;
+    let minor = parse_numeric_define(&contents, "MNN_VERSION_MINOR", &path)?;
+    let patch = parse_numeric_define(&contents, "MNN_VERSION_PATCH", &path)?;
+    Ok(format!("{major}.{minor}.{patch}"))
+}
+
+fn parse_numeric_define(contents: &str, name: &str, path: &Path) -> Result<u32, String> {
+    let mut found = None;
+    for line in contents.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("#define") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        if parts.next() != Some(name) {
+            continue;
+        }
+        let value = parts
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .ok_or_else(|| {
+                format!(
+                    "selected MNN header has an invalid {name} in {}",
+                    path.display()
+                )
+            })?;
+        if found.is_some_and(|previous| previous != value) {
+            return Err(format!(
+                "selected MNN header defines conflicting {name} values in {}",
+                path.display()
+            ));
+        }
+        found = Some(value);
+    }
+    found.ok_or_else(|| {
+        format!(
+            "selected MNN header is missing {name} in {}",
+            path.display()
+        )
+    })
+}
+
+fn contains_link_library(lib_dir: &Path, target: &str, static_link: bool) -> bool {
+    crate::build_config::native_library_present(lib_dir, target, static_link)
 }
 
 fn download_verified(url: &str, destination: &Path, expected: &str) -> Result<(), String> {
@@ -400,6 +525,8 @@ mod tests {
     use flate2::Compression;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    const MNN_DEFINE_3_6_1: &[u8] = b"#define MNN_VERSION_MAJOR 3\n#define MNN_VERSION_MINOR 6\n#define MNN_VERSION_PATCH 1\n#define MNN_VERSION STR(MNN_VERSION_MAJOR) \".\" STR(MNN_VERSION_MINOR) \".\" STR(MNN_VERSION_PATCH)\n";
+
     fn test_requirements() -> ArtifactRequirements {
         ArtifactRequirements {
             target: "x86_64-unknown-linux-gnu".into(),
@@ -410,8 +537,78 @@ mod tests {
     }
 
     fn write_manifest(root: &Path, json: &str) {
-        fs::write(root.join("mnn-rs-artifact.json"), json).unwrap();
         fs::write(root.join("LICENSE-MNN"), "Apache-2.0 notice").unwrap();
+        fs::create_dir_all(root.join("include/MNN")).unwrap();
+        fs::write(root.join("include/MNN/MNNDefine.h"), MNN_DEFINE_3_6_1).unwrap();
+
+        let mut manifest: serde_json::Value = serde_json::from_str(json).unwrap();
+        if manifest["schema_version"] == 1 {
+            manifest["schema_version"] = serde_json::json!(2);
+        }
+        manifest["source_url"] = serde_json::json!("https://github.com/alibaba/MNN.git");
+        manifest["source_commit"] = serde_json::json!("a".repeat(40));
+        manifest["build_options"] = serde_json::json!({ "MNN_BUILD_LLM": true });
+        manifest["toolchain"] = serde_json::json!({ "compiler": "fixture" });
+        let mut files = serde_json::Map::new();
+        for path in fixture_files(root) {
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.insert(name, serde_json::json!(sha256_file(&path).unwrap()));
+        }
+        manifest["files"] = serde_json::Value::Object(files);
+        fs::write(
+            root.join("mnn-oxide-artifact.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn fixture_files(root: &Path) -> Vec<PathBuf> {
+        fn visit(path: &Path, output: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(&path, output);
+                } else if path.file_name().unwrap() != "mnn-oxide-artifact.json" {
+                    output.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        visit(root, &mut files);
+        files.sort();
+        files
+    }
+
+    fn make_archive_from_dir(path: &Path, root: &Path) {
+        let output = File::create(path).unwrap();
+        let encoder = GzEncoder::new(output, Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for file in fixture_files_including_manifest(root) {
+            let relative = file.strip_prefix(root).unwrap();
+            builder.append_path_with_name(&file, relative).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+
+    fn fixture_files_including_manifest(root: &Path) -> Vec<PathBuf> {
+        fn visit(path: &Path, output: &mut Vec<PathBuf>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(&path, output);
+                } else {
+                    output.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        visit(root, &mut files);
+        files.sort();
+        files
     }
 
     fn temp_path(label: &str) -> PathBuf {
@@ -546,6 +743,66 @@ mod tests {
     }
 
     #[test]
+    fn artifact_manifest_rejects_tampered_files_and_invalid_source_revision() {
+        let root = temp_path("manifest-file-integrity");
+        fs::create_dir(&root).unwrap();
+        write_manifest(
+            &root,
+            r#"{
+                "schema_version": 2,
+                "mnn_version": "3.6.1",
+                "target": "x86_64-unknown-linux-gnu",
+                "link_mode": "static",
+                "backends": ["cpu"],
+                "optional_modules": ["llm"],
+                "notice_files": ["LICENSE-MNN"]
+            }"#,
+        );
+
+        fs::write(root.join("LICENSE-MNN"), "replaced notice").unwrap();
+        assert!(validate_artifact_manifest(&root, &test_requirements())
+            .unwrap_err()
+            .contains("file hash does not match"));
+
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("mnn-oxide-artifact.json")).unwrap())
+                .unwrap();
+        manifest["source_commit"] = serde_json::json!("short");
+        fs::write(
+            root.join("mnn-oxide-artifact.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_artifact_manifest(&root, &test_requirements())
+            .unwrap_err()
+            .contains("full 40-character commit SHA"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_manifest_rejects_version_that_disagrees_with_selected_headers() {
+        let root = temp_path("manifest-version-mismatch");
+        fs::create_dir(&root).unwrap();
+        write_manifest(
+            &root,
+            r#"{
+                "schema_version": 1,
+                "mnn_version": "3.5.0",
+                "target": "x86_64-unknown-linux-gnu",
+                "link_mode": "static",
+                "backends": ["cpu"],
+                "optional_modules": ["llm"],
+                "notice_files": ["LICENSE-MNN"]
+            }"#,
+        );
+
+        let error = validate_artifact_manifest(&root, &test_requirements()).unwrap_err();
+        assert!(error.contains("declares MNN version `3.5.0`"));
+        assert!(error.contains("MNNDefine.h declares `3.6.1`"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn artifact_manifest_rejects_unknown_schema_and_incompatible_claims() {
         let root = temp_path("manifest-invalid");
         fs::create_dir(&root).unwrap();
@@ -561,7 +818,7 @@ mod tests {
         }"#;
         write_manifest(
             &root,
-            &valid.replace("\"schema_version\": 1", "\"schema_version\": 2"),
+            &valid.replace("\"schema_version\": 1", "\"schema_version\": 3"),
         );
         assert!(validate_artifact_manifest(&root, &requirements)
             .unwrap_err()
@@ -606,37 +863,50 @@ mod tests {
     fn artifact_manifest_is_required_after_archive_extraction() {
         let archive = temp_path("manifest-archive.tar.gz");
         let destination = temp_path("manifest-archive-out");
-        fs::create_dir(&destination).unwrap();
-        make_archive(
-            &archive,
-            &[
-                ("include/MNN/Interpreter.hpp", tar::EntryType::Regular, b"header"),
-                ("include/MNN/MNNDefine.h", tar::EntryType::Regular, b"header"),
-                ("include/MNN/MNNForwardType.h", tar::EntryType::Regular, b"header"),
-                ("include/MNN/Tensor.hpp", tar::EntryType::Regular, b"header"),
-                ("include/MNN/ImageProcess.hpp", tar::EntryType::Regular, b"header"),
-                ("include/MNN/Matrix.h", tar::EntryType::Regular, b"header"),
-                ("include/llm/llm.hpp", tar::EntryType::Regular, b"header"),
-                ("lib/libMNN.a", tar::EntryType::Regular, b"library"),
-                ("LICENSE-MNN", tar::EntryType::Regular, b"notice"),
-                (
-                    "mnn-rs-artifact.json",
-                    tar::EntryType::Regular,
-                    br#"{"schema_version":1,"mnn_version":"3.6.1","target":"x86_64-unknown-linux-gnu","link_mode":"static","backends":["cpu"],"optional_modules":["llm"],"notice_files":["LICENSE-MNN"]}"#,
-                ),
-            ],
+        let package = temp_path("manifest-archive-package");
+        fs::create_dir_all(package.join("include/MNN")).unwrap();
+        fs::create_dir_all(package.join("include/llm")).unwrap();
+        fs::create_dir_all(package.join("lib")).unwrap();
+        for header in [
+            "Interpreter.hpp",
+            "MNNForwardType.h",
+            "Tensor.hpp",
+            "ImageProcess.hpp",
+            "Matrix.h",
+        ] {
+            fs::write(package.join("include/MNN").join(header), b"header").unwrap();
+        }
+        fs::write(package.join("include/MNN/MNNDefine.h"), MNN_DEFINE_3_6_1).unwrap();
+        fs::write(package.join("include/llm/llm.hpp"), b"header").unwrap();
+        fs::write(package.join("lib/libMNN.a"), b"library").unwrap();
+        write_manifest(
+            &package,
+            r#"{
+                "schema_version": 2,
+                "mnn_version": "3.6.1",
+                "target": "x86_64-unknown-linux-gnu",
+                "link_mode": "static",
+                "backends": ["cpu"],
+                "optional_modules": ["llm"],
+                "notice_files": ["LICENSE-MNN"]
+            }"#,
         );
+        // The helper writes LICENSE-MNN and the selected version header, and
+        // inventories every package file other than the manifest itself.
+        make_archive_from_dir(&archive, &package);
+        fs::create_dir(&destination).unwrap();
         extract_archive(&archive, &destination).unwrap();
         assert!(validate_extracted_archive(&destination, &test_requirements()).is_ok());
 
-        fs::remove_file(destination.join("mnn-rs-artifact.json")).unwrap();
+        fs::remove_file(destination.join("mnn-oxide-artifact.json")).unwrap();
         assert!(
             validate_extracted_archive(&destination, &test_requirements())
                 .unwrap_err()
-                .contains("must contain mnn-rs-artifact.json")
+                .contains("must contain mnn-oxide-artifact.json")
         );
         let _ = fs::remove_file(archive);
         let _ = fs::remove_dir_all(destination);
+        let _ = fs::remove_dir_all(package);
     }
 
     #[test]
@@ -654,7 +924,12 @@ mod tests {
             "MNN/Matrix.h",
             "llm/llm.hpp",
         ] {
-            fs::write(root.join("include").join(header), b"header").unwrap();
+            let contents = if header == "MNN/MNNDefine.h" {
+                MNN_DEFINE_3_6_1
+            } else {
+                b"header"
+            };
+            fs::write(root.join("include").join(header), contents).unwrap();
         }
         fs::write(root.join("lib/libMNN.a"), b"library").unwrap();
         write_manifest(
@@ -688,6 +963,18 @@ mod tests {
         for header in ["Module.hpp", "Expr.hpp", "Executor.hpp"] {
             fs::write(root.join("include/MNN/expr").join(header), b"header").unwrap();
         }
+        write_manifest(
+            &root,
+            r#"{
+                "schema_version": 2,
+                "mnn_version": "3.6.1",
+                "target": "x86_64-unknown-linux-gnu",
+                "link_mode": "static",
+                "backends": ["cpu"],
+                "optional_modules": ["module"],
+                "notice_files": ["LICENSE-MNN"]
+            }"#,
+        );
         let mut with_module = without_llm;
         with_module.optional_modules.push("module".into());
         assert!(validate_extracted_archive(&root, &with_module).is_ok());

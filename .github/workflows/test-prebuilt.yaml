@@ -9,7 +9,7 @@ name: Test (Prebuilt MNN)
 #     produced by .github/workflows/build-binaries.yml on tag push. If the
 #     release/assets are missing, MNN linking fails.
 #   - The prebuilt bundle (built by build-binaries.yml) ships both the MNN
-#     library and the LLM C++ headers (llm/llm.hpp) that mnn-sys's wrapper
+#     library and the LLM C++ headers (llm/llm.hpp) that mnn-oxide-sys's wrapper
 #     needs under the `llm` feature, so build.rs downloads and uses it directly.
 #   - GitHub runners must be able to reach huggingface.co to download the LLM
 #     test model (a ModelScope alternative is provided in a comment below).

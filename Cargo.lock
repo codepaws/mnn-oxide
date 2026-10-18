@@ -567,18 +567,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "mnn-rs"
+name = "mnn-oxide"
 version = "0.1.7"
 dependencies = [
  "half",
- "mnn-rs-sys",
+ "mnn-oxide-sys",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",
+ "ureq",
 ]
 
 [[package]]
-name = "mnn-rs-sys"
+name = "mnn-oxide-sys"
 version = "0.1.7"
 dependencies = [
  "bindgen",

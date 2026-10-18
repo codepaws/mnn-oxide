@@ -1,5 +1,5 @@
 [package]
-name = "mnn-rs-sys"
+name = "mnn-oxide-sys"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

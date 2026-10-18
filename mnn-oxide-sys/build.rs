@@ -1,4 +1,4 @@
-//! Build script for mnn-sys. The engine is acquired only through explicit configuration.
+//! Build script for mnn-oxide-sys. The engine is acquired only through explicit configuration.
 
 use std::env;
 use std::path::PathBuf;
@@ -14,6 +14,20 @@ mod prebuilt;
 use std::collections::hash_map::DefaultHasher;
 #[cfg(feature = "build-from-source")]
 use std::hash::{Hash, Hasher};
+
+fn selected_msvc_runtime(use_static_mnn: bool) -> String {
+    env::var("MNN_MSVC_RUNTIME")
+        .ok()
+        .map(|value| value.to_uppercase())
+        .filter(|value| value == "MT" || value == "MD")
+        .unwrap_or_else(|| {
+            if use_static_mnn {
+                "MT".to_string()
+            } else {
+                "MD".to_string()
+            }
+        })
+}
 
 /// Get the NDK host tag based on the current host platform
 fn get_ndk_host_tag() -> &'static str {
@@ -43,7 +57,8 @@ fn main() {
     // docs.rs sets DOCS_RS=1 environment variable
     if env::var("DOCS_RS").is_ok() {
         println!("cargo:rustc-env=MNN_DOCS_RS=1");
-        println!("cargo:warning=mnn-sys: Building documentation on docs.rs, skipping native library linking");
+        println!("cargo:rustc-env=MNN_SELECTED_HEADER_VERSION=unknown");
+        println!("cargo:warning=mnn-oxide-sys: Building documentation on docs.rs, skipping native library linking");
         return;
     }
 
@@ -51,7 +66,7 @@ fn main() {
     let debug_build = env::var("MNN_DEBUG_BUILD").is_ok();
 
     if debug_build {
-        println!("cargo:warning=mnn-sys: Starting build script");
+        println!("cargo:warning=mnn-oxide-sys: Starting build script");
     }
 
     // Get target information
@@ -60,10 +75,10 @@ fn main() {
     let target_env = get_target_env(&target);
     let target_arch = get_target_arch(&target);
     if debug_build {
-        println!("cargo:warning=mnn-sys: Target: {}", target);
-        println!("cargo:warning=mnn-sys: Target OS: {}", target_os);
-        println!("cargo:warning=mnn-sys: Target Env: {}", target_env);
-        println!("cargo:warning=mnn-sys: Target Arch: {}", target_arch);
+        println!("cargo:warning=mnn-oxide-sys: Target: {}", target);
+        println!("cargo:warning=mnn-oxide-sys: Target OS: {}", target_os);
+        println!("cargo:warning=mnn-oxide-sys: Target Env: {}", target_env);
+        println!("cargo:warning=mnn-oxide-sys: Target Arch: {}", target_arch);
     }
 
     // Read environment variables
@@ -138,7 +153,7 @@ fn main() {
         // Use environment variables if both are set (highest priority for testing)
         if debug_build {
             println!(
-                "cargo:warning=mnn-sys: Using MNN_LIB_DIR and MNN_INCLUDE_DIR from environment"
+                "cargo:warning=mnn-oxide-sys: Using MNN_LIB_DIR and MNN_INCLUDE_DIR from environment"
             );
         }
         (
@@ -226,6 +241,22 @@ fn main() {
         panic!("MNN library directory is not configured. Set MNN_LIB_DIR alongside MNN_INCLUDE_DIR; no system-wide search or fallback is performed.");
     }
 
+    let selected_header_version = read_mnn_header_version(
+        include_dir
+            .as_ref()
+            .expect("MNN include directory was validated above"),
+    )
+    .unwrap_or_else(|message| panic!("MNN header version error: {message}"));
+    println!("cargo:rustc-env=MNN_SELECTED_HEADER_VERSION={selected_header_version}");
+    println!(
+        "cargo:rerun-if-changed={}",
+        include_dir
+            .as_ref()
+            .unwrap()
+            .join("MNN/MNNDefine.h")
+            .display()
+    );
+
     // Build the wrapper library
     let mut build = cc::Build::new();
     build.cpp(true).file(&wrapper_cpp).include(&wrapper_dir);
@@ -257,12 +288,13 @@ fn main() {
     } else if cfg!(feature = "module") {
         panic!("'module' requires an MNN source build with the training module");
     }
-    // Note: runtime feature requires MNN with RuntimeManager (Express::Executor)
+    // Runtime sharing uses Interpreter::RuntimeInfo and is enabled only for
+    // explicit source builds because that API is not required in BYO kits.
     if cfg!(feature = "runtime") && cfg!(feature = "build-from-source") {
         build.define("MNN_RUNTIME_ENABLED", None);
         println!("cargo:rustc-cfg=feature=\"runtime\"");
     } else if cfg!(feature = "runtime") {
-        panic!("'runtime' requires an MNN source build with RuntimeManager");
+        panic!("'runtime' requires an MNN source build with RuntimeInfo support");
     }
 
     // Compile module wrapper if feature enabled
@@ -298,7 +330,7 @@ fn main() {
         }
         println!("cargo:rustc-cfg=feature=\"llm\"");
     } else if cfg!(feature = "llm") {
-        panic!("mnn-sys: 'llm' feature enabled but mnn_llm_wrapper.cpp is missing (corrupted checkout)");
+        panic!("mnn-oxide-sys: 'llm' feature enabled but mnn_llm_wrapper.cpp is missing (corrupted checkout)");
     }
 
     // Configure Android NDK compiler for cross-compilation
@@ -351,7 +383,7 @@ fn main() {
             // Set for cc-rs to find the archiver
             build.archiver(&ar_path);
             if debug_build {
-                println!("cargo:warning=mnn-sys: Using archiver: {:?}", ar_path);
+                println!("cargo:warning=mnn-oxide-sys: Using archiver: {:?}", ar_path);
             }
         }
 
@@ -380,9 +412,9 @@ fn main() {
         }
 
         if debug_build {
-            println!("cargo:warning=mnn-sys: Android NDK: {:?}", ndk_path);
+            println!("cargo:warning=mnn-oxide-sys: Android NDK: {:?}", ndk_path);
             println!(
-                "cargo:warning=mnn-sys: Android target: {}{}",
+                "cargo:warning=mnn-oxide-sys: Android target: {}{}",
                 target_triple, api_level
             );
         }
@@ -391,27 +423,20 @@ fn main() {
     // Set C++ standard and compiler flags based on TARGET (not host)
     if target_env == "msvc" {
         build.flag("/std:c++14");
+        // The C ABI wrappers catch MNN's C++ exceptions and translate them to
+        // sentinel returns, so MSVC must emit normal C++ unwind semantics.
+        build.flag("/EHsc");
         // The wrapper's CRT must match the linked MNN library's CRT:
         //   - static / prebuilt MNN is built with /MT (static CRT)
         //   - dynamic MNN (DLL, e.g. a system Dynamic/MD package) uses /MD
         // Mixing them triggers LNK4098 (LIBCMT conflicts with other libs).
         // Override with MNN_MSVC_RUNTIME=MT|MD when the MNN library was built
         // with a different CRT than the default for the chosen link mode.
-        let msvc_runtime = env::var("MNN_MSVC_RUNTIME")
-            .ok()
-            .map(|v| v.to_uppercase())
-            .filter(|v| v == "MT" || v == "MD")
-            .unwrap_or_else(|| {
-                if use_static {
-                    "MT".to_string()
-                } else {
-                    "MD".to_string()
-                }
-            });
+        let msvc_runtime = selected_msvc_runtime(use_static);
         build.flag(format!("/{}", msvc_runtime));
         if debug_build {
             println!(
-                "cargo:warning=mnn-sys: MSVC runtime: /{} (use_static={})",
+                "cargo:warning=mnn-oxide-sys: MSVC runtime: /{} (use_static={})",
                 msvc_runtime, use_static
             );
         }
@@ -422,7 +447,10 @@ fn main() {
     // Print compiler info in debug mode
     if debug_build {
         if let Ok(tool) = build.try_get_compiler() {
-            println!("cargo:warning=mnn-sys: C++ compiler: {:?}", tool.path());
+            println!(
+                "cargo:warning=mnn-oxide-sys: C++ compiler: {:?}",
+                tool.path()
+            );
         }
     }
 
@@ -440,13 +468,12 @@ fn main() {
 
     // Link the library
     let link_type = if use_static { "static" } else { "dylib" };
-    // For MinGW on Windows, the library is named libMNN.a (capital MNN)
-    // For MSVC it's mnn.lib, for Unix it's libmnn.a
-    if target_os == "windows" && target_env == "gnu" {
-        println!("cargo:rustc-link-lib={}=MNN", link_type);
-    } else {
-        println!("cargo:rustc-link-lib={}=mnn", link_type);
-    }
+    // MNN's CMake target is case-sensitive on Unix and emits libMNN.* there.
+    println!(
+        "cargo:rustc-link-lib={}={}",
+        link_type,
+        build_config::native_link_name()
+    );
 
     // Configure platform-specific settings
     configure_platform(&target_os, &target_env);
@@ -466,7 +493,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MNN_INCLUDE_DIR");
     println!("cargo:rerun-if-env-changed=MNN_USE_SYSTEM");
     println!("cargo:rerun-if-env-changed=MNN_MSVC_RUNTIME");
+    println!("cargo:rerun-if-env-changed=MNN_CMAKE_GENERATOR");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=MNN_OPENCL_LIB_DIR");
     println!("cargo:rerun-if-env-changed=ANDROID_NDK_HOME");
     println!("cargo:rerun-if-env-changed=NDK_HOME");
 
@@ -477,15 +506,41 @@ fn main() {
     println!("cargo:rerun-if-changed=wrapper/mnn_llm_wrapper.cpp");
 
     if debug_build {
-        println!("cargo:warning=mnn-sys: Build script completed successfully");
+        println!("cargo:warning=mnn-oxide-sys: Build script completed successfully");
     }
 }
 
-/// Tell Cargo to rerun this build script when any tracked source file changes
-/// or when an untracked file/directory is added beneath an existing source dir.
-fn emit_source_rerun_paths(source: &str) {
-    use std::collections::HashSet;
+fn read_mnn_header_version(include_dir: &std::path::Path) -> Result<String, String> {
+    let path = include_dir.join("MNN/MNNDefine.h");
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let read_macro = |name: &str| -> Result<u32, String> {
+        contents
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim_start().strip_prefix("#define")?;
+                let mut parts = rest.split_whitespace();
+                (parts.next() == Some(name)).then(|| parts.next()).flatten()
+            })
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .ok_or_else(|| {
+                format!(
+                    "missing or invalid numeric macro {name} in {}",
+                    path.display()
+                )
+            })
+    };
+    let major = read_macro("MNN_VERSION_MAJOR")?;
+    let minor = read_macro("MNN_VERSION_MINOR")?;
+    let patch = read_macro("MNN_VERSION_PATCH")?;
+    Ok(format!("{major}.{minor}.{patch}"))
+}
 
+/// Tell Cargo to rerun this build script when the source tree changes.
+/// Watching the root directory is recursive and avoids emitting a directive
+/// for every MNN file (some of which Git quotes on Windows).
+fn emit_source_rerun_paths(source: &str) {
     let root = Command::new("git")
         .args(["-C", source, "rev-parse", "--show-toplevel"])
         .output()
@@ -494,36 +549,7 @@ fn emit_source_rerun_paths(source: &str) {
         panic!("Could not find MNN source root for Cargo change tracking");
     }
     let root = PathBuf::from(String::from_utf8_lossy(&root.stdout).trim());
-    let files = Command::new("git")
-        .args(["-C", source, "ls-files", "--cached"])
-        .output()
-        .expect("Could not enumerate MNN tracked source files");
-    if !files.status.success() {
-        panic!("Could not enumerate MNN tracked source files for Cargo change tracking");
-    }
-
-    let mut watched = HashSet::new();
-    watched.insert(root.clone());
-    for relative in String::from_utf8_lossy(&files.stdout).lines() {
-        let path = root.join(relative);
-        watched.insert(path.clone());
-        let mut parent = path.parent();
-        while let Some(directory) = parent {
-            if !directory.starts_with(&root) {
-                break;
-            }
-            watched.insert(directory.to_path_buf());
-            if directory == root {
-                break;
-            }
-            parent = directory.parent();
-        }
-    }
-    let mut watched: Vec<_> = watched.into_iter().collect();
-    watched.sort();
-    for path in watched {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
+    println!("cargo:rerun-if-changed={}", root.display());
 }
 
 /// Parse target OS from target triple
@@ -634,7 +660,15 @@ fn get_lib_and_include_dirs(
         // checkout path so a changed pin can never reuse stale native output.
         let revision = mnn_version.as_deref().expect("validated source revision");
         let cache_id = build_config::source_cache_identity(&source_path, revision);
-        let build_dir = target_dir.join("mnn-build").join(target).join(cache_id);
+        let source_tree_mode = if target_os == "android" || cfg!(feature = "llm") {
+            "isolated"
+        } else {
+            "direct"
+        };
+        let build_dir = target_dir
+            .join("mnn-build")
+            .join(target)
+            .join(format!("{cache_id}-{source_tree_mode}"));
 
         let (lib_dir, include_dir) = build_mnn_from_source(
             &source_path,
@@ -673,22 +707,15 @@ fn compute_config_hash(
     target_env.hash(&mut hasher);
     target_arch.hash(&mut hasher);
     use_static.hash(&mut hasher);
+    std::env::var("MNN_CMAKE_GENERATOR")
+        .unwrap_or_default()
+        .hash(&mut hasher);
 
     // The MSVC CRT choice maps to MNN_WIN_RUNTIME_MT in build-from-source.
     // Hash it so the cache invalidates when the runtime selection changes
     // (otherwise a stale dynamic build could keep a /MT-built MNN).
     if target_os == "windows" && target_env == "msvc" {
-        let msvc_runtime = std::env::var("MNN_MSVC_RUNTIME")
-            .ok()
-            .map(|v| v.to_uppercase())
-            .filter(|v| v == "MT" || v == "MD")
-            .unwrap_or_else(|| {
-                if use_static {
-                    "MT".to_string()
-                } else {
-                    "MD".to_string()
-                }
-            });
+        let msvc_runtime = selected_msvc_runtime(use_static);
         msvc_runtime.hash(&mut hasher);
     }
 
@@ -703,13 +730,18 @@ fn compute_config_hash(
     cfg!(feature = "sse").hash(&mut hasher);
     cfg!(feature = "avx2").hash(&mut hasher);
     cfg!(feature = "avx512").hash(&mut hasher);
+    cfg!(feature = "image-process").hash(&mut hasher);
+    cfg!(feature = "module").hash(&mut hasher);
+    cfg!(feature = "runtime").hash(&mut hasher);
+    cfg!(feature = "llm").hash(&mut hasher);
+    build_config::source_build_layout_args().hash(&mut hasher);
 
     hasher.finish()
 }
 
 #[cfg(feature = "build-from-source")]
-/// Workaround for upstream MNN bug: when MNN_SEP_BUILD is OFF (the default for
-/// mnn-rs static builds), the `llm` target in transformers/llm/engine is an
+/// Workaround for upstream MNN bug: when MNN_SEP_BUILD is OFF, the `llm` target
+/// in transformers/llm/engine is an
 /// OBJECT library, but its CMakeLists.txt attaches a POST_BUILD command to it.
 /// Modern CMake rejects POST_BUILD on OBJECT libraries, which fails Android
 /// builds. Affects MNN 3.6.1 and current main. Patch a disposable build copy
@@ -728,7 +760,7 @@ fn patch_llm_cmake_for_object_library(source_path: &std::path::Path, debug: bool
         Ok(s) => s,
         Err(e) => {
             println!(
-                "cargo:warning=mnn-sys: could not read {}: {}",
+                "cargo:warning=mnn-oxide-sys: could not read {}: {}",
                 cmake_file.display(),
                 e
             );
@@ -753,7 +785,7 @@ ELSE()"#;
   set(NATIVE_INCLUDE_OUTPUT ".")
 ENDIF()
 IF(NOT MNN_SEP_BUILD)
-  # mnn-rs workaround for upstream MNN bug: `llm` is an OBJECT library when
+  # mnn-oxide workaround for upstream MNN bug: `llm` is an OBJECT library when
   # MNN_SEP_BUILD is OFF, and CMake forbids POST_BUILD on OBJECT libraries.
   # Copy headers at configure time instead.
   file(COPY ${CMAKE_CURRENT_LIST_DIR}/include/ DESTINATION ${NATIVE_INCLUDE_OUTPUT})
@@ -768,7 +800,7 @@ ENDIF()
 ELSE()"#;
     if !original.contains(NEEDLE) {
         println!(
-            "cargo:warning=mnn-sys: skipping CMake workaround patch (pattern not found) in {}",
+            "cargo:warning=mnn-oxide-sys: skipping CMake workaround patch (pattern not found) in {}",
             cmake_file.display()
         );
         return;
@@ -778,13 +810,13 @@ ELSE()"#;
         Ok(()) => {
             if debug {
                 println!(
-                    "cargo:warning=mnn-sys: patched {} (llm OBJECT-library POST_BUILD workaround)",
+                    "cargo:warning=mnn-oxide-sys: patched {} (llm OBJECT-library POST_BUILD workaround)",
                     cmake_file.display()
                 );
             }
         }
         Err(e) => println!(
-            "cargo:warning=mnn-sys: failed to patch {}: {}",
+            "cargo:warning=mnn-oxide-sys: failed to patch {}: {}",
             cmake_file.display(),
             e
         ),
@@ -807,10 +839,13 @@ fn build_mnn_from_source(
     let install_dir = build_dir.join("install");
 
     if debug {
-        println!("cargo:warning=mnn-sys: Building MNN from source");
-        println!("cargo:warning=mnn-sys: Source: {:?}", source_path);
-        println!("cargo:warning=mnn-sys: Build dir: {:?}", build_dir);
-        println!("cargo:warning=mnn-sys: Install dir: {:?}", install_dir);
+        println!("cargo:warning=mnn-oxide-sys: Building MNN from source");
+        println!("cargo:warning=mnn-oxide-sys: Source: {:?}", source_path);
+        println!("cargo:warning=mnn-oxide-sys: Build dir: {:?}", build_dir);
+        println!(
+            "cargo:warning=mnn-oxide-sys: Install dir: {:?}",
+            install_dir
+        );
     }
 
     // Compute configuration hash
@@ -829,22 +864,18 @@ fn build_mnn_from_source(
         true
     };
 
-    // Check if already built with same configuration
-    let lib_name = if target_os == "windows" {
-        if target_env == "gnu" {
-            "libMNN.a"
-        } else {
-            "mnn.lib"
-        }
-    } else {
-        "libmnn.a"
-    };
-    let lib_path = install_dir.join("lib").join(lib_name);
+    // Check if already built with same configuration using MNN's exact CMake
+    // output casing and the selected static/dynamic mode.
+    let lib_path = install_dir
+        .join("lib")
+        .join(build_config::native_library_file_name(
+            target_os, target_env, _static,
+        ));
 
     if lib_path.exists() && !need_rebuild {
         if debug {
             println!(
-                "cargo:warning=mnn-sys: Using cached MNN build at {:?}",
+                "cargo:warning=mnn-oxide-sys: Using cached MNN build at {:?}",
                 install_dir
             );
         }
@@ -854,15 +885,27 @@ fn build_mnn_from_source(
     // Create build directory
     std::fs::create_dir_all(&build_dir).expect("Failed to create build directory");
 
-    // Android's CMake workaround edits its input file. Configure from a local
-    // copy so the validated MNN checkout remains unchanged.
-    let cmake_source = if target_os == "android" {
+    // The LLM object-library workaround edits its input file. Configure from a
+    // local copy so the validated MNN checkout remains unchanged. Android also
+    // uses an isolated tree for its NDK-specific CMake workaround.
+    let cmake_source = if target_os == "android" || cfg!(feature = "llm") {
         let source_copy = build_dir.join("source-tree-tracked");
-        if !source_copy.exists() {
-            copy_tracked_source_tree(source_path, &source_copy)
-                .expect("Failed to create isolated MNN source copy for Android build");
+        let staging_copy = build_dir.join("source-tree-tracked.staging");
+        if staging_copy.exists() {
+            std::fs::remove_dir_all(&staging_copy)
+                .expect("Failed to remove an incomplete staged MNN source copy");
         }
-        patch_llm_cmake_for_object_library(&source_copy, debug);
+        if source_copy.exists() {
+            std::fs::remove_dir_all(&source_copy)
+                .expect("Failed to refresh the isolated MNN source copy");
+        }
+        copy_tracked_source_tree(source_path, &staging_copy)
+            .expect("Failed to create isolated MNN source staging copy");
+        if cfg!(feature = "llm") {
+            patch_llm_cmake_for_object_library(&staging_copy, debug);
+        }
+        std::fs::rename(&staging_copy, &source_copy)
+            .expect("Failed to install the isolated MNN source copy");
         source_copy
     } else {
         source_path.to_path_buf()
@@ -920,16 +963,26 @@ fn build_mnn_from_source(
     } else {
         (None, vec![])
     };
+    let generator_override = std::env::var("MNN_CMAKE_GENERATOR")
+        .ok()
+        .filter(|generator| !generator.trim().is_empty());
+    let generator = generator_override.as_deref().or(generator);
 
     // Configure CMake options based on features
     let mut cmake_args = vec![format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display())];
+    cmake_args.extend(
+        build_config::source_build_layout_args()
+            .into_iter()
+            .map(str::to_string),
+    );
 
     // On Windows MSVC, build MNN with a CRT matching the link mode so the
     // wrapper and the linked MNN library agree: static -> /MT, dynamic -> /MD
     if target_os == "windows" && target_env == "msvc" {
+        let msvc_runtime = selected_msvc_runtime(_static);
         cmake_args.push(format!(
             "-DMNN_WIN_RUNTIME_MT={}",
-            if _static { "ON" } else { "OFF" }
+            if msvc_runtime == "MT" { "ON" } else { "OFF" }
         ));
     }
 
@@ -1002,13 +1055,13 @@ fn build_mnn_from_source(
             cmake_args.push("-DFETCHCONTENT_FULLY_DISCONNECTED=ON".to_string());
             if debug {
                 println!(
-                    "cargo:warning=mnn-sys: Found pre-placed CUTLASS at {}, using offline mode",
+                    "cargo:warning=mnn-oxide-sys: Found pre-placed CUTLASS at {}, using offline mode",
                     cutlass_dir.display()
                 );
             }
         } else {
             println!(
-                "cargo:warning=mnn-sys: CUDA build needs CUTLASS, expected at {} but not found (FetchContent will try to download it)",
+                "cargo:warning=mnn-oxide-sys: CUDA build needs CUTLASS, expected at {} but not found (FetchContent will try to download it)",
                 cutlass_dir.display()
             );
         }
@@ -1026,7 +1079,7 @@ fn build_mnn_from_source(
                 cmake_args.push(format!("-DCUDA_HOST_COMPILER={}", bindir.display()));
                 if debug {
                     println!(
-                        "cargo:warning=mnn-sys: CUDA_HOST_COMPILER set to {}",
+                        "cargo:warning=mnn-oxide-sys: CUDA_HOST_COMPILER set to {}",
                         bindir.display()
                     );
                 }
@@ -1136,9 +1189,12 @@ fn build_mnn_from_source(
         cmake_args.push("-DCMAKE_SYSTEM_NAME=Android".to_string());
 
         if debug {
-            println!("cargo:warning=mnn-sys: Android NDK: {:?}", ndk_path);
-            println!("cargo:warning=mnn-sys: Android ABI: {}", abi);
-            println!("cargo:warning=mnn-sys: Android Platform: {}", platform);
+            println!("cargo:warning=mnn-oxide-sys: Android NDK: {:?}", ndk_path);
+            println!("cargo:warning=mnn-oxide-sys: Android ABI: {}", abi);
+            println!(
+                "cargo:warning=mnn-oxide-sys: Android Platform: {}",
+                platform
+            );
         }
 
         // Disable KleidiAI on Android as it has linking issues with stdout/stderr
@@ -1173,15 +1229,15 @@ fn build_mnn_from_source(
         }
 
         if debug {
-            println!("cargo:warning=mnn-sys: iOS Platform: {}", platform);
-            println!("cargo:warning=mnn-sys: iOS Arch: {}", arch);
-            println!("cargo:warning=mnn-sys: iOS SDK: {}", sdk_name);
+            println!("cargo:warning=mnn-oxide-sys: iOS Platform: {}", platform);
+            println!("cargo:warning=mnn-oxide-sys: iOS Arch: {}", arch);
+            println!("cargo:warning=mnn-oxide-sys: iOS SDK: {}", sdk_name);
         }
     }
 
     if debug {
-        println!("cargo:warning=mnn-sys: CMake args: {:?}", cmake_args);
-        println!("cargo:warning=mnn-sys: Generator: {:?}", generator);
+        println!("cargo:warning=mnn-oxide-sys: CMake args: {:?}", cmake_args);
+        println!("cargo:warning=mnn-oxide-sys: Generator: {:?}", generator);
     }
 
     // Run CMake configure
@@ -1199,7 +1255,10 @@ fn build_mnn_from_source(
     cmd.args(["-S", cmake_source.to_str().unwrap()]);
 
     if debug {
-        println!("cargo:warning=mnn-sys: CMake configure command: {:?}", cmd);
+        println!(
+            "cargo:warning=mnn-oxide-sys: CMake configure command: {:?}",
+            cmd
+        );
     }
 
     let status = cmd
@@ -1229,7 +1288,10 @@ fn build_mnn_from_source(
     }
 
     if debug {
-        println!("cargo:warning=mnn-sys: Build command: {:?}", build_cmd);
+        println!(
+            "cargo:warning=mnn-oxide-sys: Build command: {:?}",
+            build_cmd
+        );
     }
 
     let build_status = build_cmd.status().expect("Failed to run CMake build");
@@ -1245,7 +1307,10 @@ fn build_mnn_from_source(
         .args(["--config", "Release"]);
 
     if debug {
-        println!("cargo:warning=mnn-sys: Install command: {:?}", install_cmd);
+        println!(
+            "cargo:warning=mnn-oxide-sys: Install command: {:?}",
+            install_cmd
+        );
     }
 
     let install_status = install_cmd.status().expect("Failed to run CMake install");
@@ -1253,7 +1318,9 @@ fn build_mnn_from_source(
     if !install_status.success() {
         // cmake --install might fail on some platforms, try manual installation
         if debug {
-            println!("cargo:warning=mnn-sys: cmake --install failed, trying manual installation");
+            println!(
+                "cargo:warning=mnn-oxide-sys: cmake --install failed, trying manual installation"
+            );
         }
     }
 
@@ -1270,7 +1337,7 @@ fn build_mnn_from_source(
         if cv_include_src.exists() {
             if debug {
                 println!(
-                    "cargo:warning=mnn-sys: Copying CV headers from {:?}",
+                    "cargo:warning=mnn-oxide-sys: Copying CV headers from {:?}",
                     cv_include_src
                 );
             }
@@ -1281,22 +1348,21 @@ fn build_mnn_from_source(
             // Copy header files recursively
             if let Err(e) = copy_dir_all(&cv_include_src, &cv_include_dest) {
                 if debug {
-                    println!("cargo:warning=mnn-sys: Failed to copy CV headers: {}", e);
+                    println!(
+                        "cargo:warning=mnn-oxide-sys: Failed to copy CV headers: {}",
+                        e
+                    );
                 }
             }
         }
     }
 
     // Check if install directory was created
-    let installed_lib = install_dir.join("lib").join(if target_os == "windows" {
-        if target_env == "gnu" {
-            "libMNN.a"
-        } else {
-            "mnn.lib"
-        }
-    } else {
-        "libmnn.a"
-    });
+    let installed_lib = install_dir
+        .join("lib")
+        .join(build_config::native_library_file_name(
+            target_os, target_env, _static,
+        ));
 
     let (lib_dir, include_dir) = if installed_lib.exists() {
         // cmake --install worked
@@ -1304,7 +1370,7 @@ fn build_mnn_from_source(
     } else {
         // Manual fallback: use build directory and source include
         if debug {
-            println!("cargo:warning=mnn-sys: Using fallback paths for lib and include");
+            println!("cargo:warning=mnn-oxide-sys: Using fallback paths for lib and include");
         }
 
         // Create install directories
@@ -1316,10 +1382,10 @@ fn build_mnn_from_source(
             if target_env == "gnu" {
                 "libMNN.a"
             } else {
-                "Release/mnn.lib"
+                "Release/MNN.lib"
             }
         } else {
-            "libMNN.a"
+            build_config::native_library_file_name(target_os, target_env, _static)
         });
 
         if lib_in_build.exists() {
@@ -1329,7 +1395,7 @@ fn build_mnn_from_source(
             if !dest.exists() {
                 if let Err(e) = std::fs::copy(&lib_in_build, &dest) {
                     if debug {
-                        println!("cargo:warning=mnn-sys: Failed to copy library: {}", e);
+                        println!("cargo:warning=mnn-oxide-sys: Failed to copy library: {}", e);
                     }
                 }
             }
@@ -1345,9 +1411,12 @@ fn build_mnn_from_source(
     };
 
     if debug {
-        println!("cargo:warning=mnn-sys: MNN built successfully");
-        println!("cargo:warning=mnn-sys: Library dir: {:?}", lib_dir);
-        println!("cargo:warning=mnn-sys: Include dir: {:?}", include_dir);
+        println!("cargo:warning=mnn-oxide-sys: MNN built successfully");
+        println!("cargo:warning=mnn-oxide-sys: Library dir: {:?}", lib_dir);
+        println!(
+            "cargo:warning=mnn-oxide-sys: Include dir: {:?}",
+            include_dir
+        );
     }
 
     (lib_dir, include_dir)
@@ -1457,24 +1526,46 @@ fn configure_platform(target_os: &str, target_env: &str) {
         }
         if cfg!(feature = "opencl") {
             println!("cargo:rustc-link-lib=OpenCL");
-            // OpenCL.lib is not on the default link path on Windows; add known
-            // locations (NVIDIA CUDA toolkit, then Windows SDK um\x64).
-            if let Ok(cuda_path) = env::var("CUDA_PATH") {
-                let cuda_lib = PathBuf::from(cuda_path).join("lib").join("x64");
-                if cuda_lib.join("OpenCL.lib").exists() {
-                    println!("cargo:rustc-link-search=native={}", cuda_lib.display());
+            // Windows ships the OpenCL loader DLL with many GPU drivers, but
+            // MSVC still needs an import library to link against it. Accept an
+            // explicit directory first, then search the CUDA toolkit and SDK.
+            let mut found_import_library = false;
+            if let Ok(opencl_lib_dir) = env::var("MNN_OPENCL_LIB_DIR") {
+                let path = PathBuf::from(opencl_lib_dir);
+                if !build_config::opencl_import_library_exists(&path) {
+                    panic!(
+                        "MNN_OPENCL_LIB_DIR must contain OpenCL.lib (got {})",
+                        path.display()
+                    );
+                }
+                println!("cargo:rustc-link-search=native={}", path.display());
+                found_import_library = true;
+            }
+            if !found_import_library {
+                if let Ok(cuda_path) = env::var("CUDA_PATH") {
+                    let cuda_lib = PathBuf::from(cuda_path).join("lib").join("x64");
+                    if build_config::opencl_import_library_exists(&cuda_lib) {
+                        println!("cargo:rustc-link-search=native={}", cuda_lib.display());
+                        found_import_library = true;
+                    }
                 }
             }
-            if let Ok(kit_root) = env::var("WindowsSdkDir") {
-                if let Ok(entries) = std::fs::read_dir(&kit_root) {
-                    for entry in entries.flatten() {
-                        let sdk_lib = entry.path().join("um").join("x64");
-                        if sdk_lib.join("OpenCL.lib").exists() {
-                            println!("cargo:rustc-link-search=native={}", sdk_lib.display());
-                            break;
+            if !found_import_library {
+                if let Ok(kit_root) = env::var("WindowsSdkDir") {
+                    if let Ok(entries) = std::fs::read_dir(&kit_root) {
+                        for entry in entries.flatten() {
+                            let sdk_lib = entry.path().join("um").join("x64");
+                            if build_config::opencl_import_library_exists(&sdk_lib) {
+                                println!("cargo:rustc-link-search=native={}", sdk_lib.display());
+                                found_import_library = true;
+                                break;
+                            }
                         }
                     }
                 }
+            }
+            if !found_import_library {
+                panic!("OpenCL backend selected on Windows but OpenCL.lib was not found; install an OpenCL SDK/import library or set MNN_OPENCL_LIB_DIR to the directory containing OpenCL.lib");
             }
         }
 

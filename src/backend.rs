@@ -34,16 +34,16 @@ impl BackendType {
     /// Convert to MNN forward type constant.
     pub(crate) fn to_mnn_type(&self) -> i32 {
         match self {
-            BackendType::CPU => mnn_rs_sys::MNN_FORWARD_CPU,
+            BackendType::CPU => mnn_oxide_sys::MNN_FORWARD_CPU,
             #[cfg(feature = "cuda")]
-            BackendType::Cuda => mnn_rs_sys::MNN_FORWARD_CUDA,
+            BackendType::Cuda => mnn_oxide_sys::MNN_FORWARD_CUDA,
             #[cfg(feature = "opencl")]
-            BackendType::OpenCL => mnn_rs_sys::MNN_FORWARD_OPENCL,
+            BackendType::OpenCL => mnn_oxide_sys::MNN_FORWARD_OPENCL,
             #[cfg(feature = "vulkan")]
-            BackendType::Vulkan => mnn_rs_sys::MNN_FORWARD_VULKAN,
+            BackendType::Vulkan => mnn_oxide_sys::MNN_FORWARD_VULKAN,
             #[cfg(feature = "metal")]
-            BackendType::Metal => mnn_rs_sys::MNN_FORWARD_METAL,
-            BackendType::Auto => mnn_rs_sys::MNN_FORWARD_AUTO,
+            BackendType::Metal => mnn_oxide_sys::MNN_FORWARD_METAL,
+            BackendType::Auto => mnn_oxide_sys::MNN_FORWARD_AUTO,
         }
     }
 
@@ -51,13 +51,13 @@ impl BackendType {
     pub(crate) fn from_mnn_type(code: i32) -> Self {
         match code {
             #[cfg(feature = "cuda")]
-            x if x == mnn_rs_sys::MNN_FORWARD_CUDA => BackendType::Cuda,
+            x if x == mnn_oxide_sys::MNN_FORWARD_CUDA => BackendType::Cuda,
             #[cfg(feature = "opencl")]
-            x if x == mnn_rs_sys::MNN_FORWARD_OPENCL => BackendType::OpenCL,
+            x if x == mnn_oxide_sys::MNN_FORWARD_OPENCL => BackendType::OpenCL,
             #[cfg(feature = "vulkan")]
-            x if x == mnn_rs_sys::MNN_FORWARD_VULKAN => BackendType::Vulkan,
+            x if x == mnn_oxide_sys::MNN_FORWARD_VULKAN => BackendType::Vulkan,
             #[cfg(feature = "metal")]
-            x if x == mnn_rs_sys::MNN_FORWARD_METAL => BackendType::Metal,
+            x if x == mnn_oxide_sys::MNN_FORWARD_METAL => BackendType::Metal,
             _ => BackendType::CPU,
         }
     }
@@ -413,11 +413,6 @@ impl DataType {
         }
     }
 
-    /// Create from MNN type code.
-    pub(crate) fn from_type_code(code: i32) -> Self {
-        Self::try_from_type_code(code).unwrap_or(DataType::Float32)
-    }
-
     /// Decode only supported native tensor types, without guessing on unknown codes.
     pub(crate) fn try_from_type_code(code: i32) -> Option<Self> {
         // MNN halide_type_t codes: (type << 8) | bits
@@ -450,7 +445,7 @@ impl std::fmt::Display for DataType {
 /// Get the MNN version string.
 pub fn version() -> String {
     unsafe {
-        let ptr = mnn_rs_sys::mnn_get_version();
+        let ptr = mnn_oxide_sys::mnn_get_version();
         if ptr.is_null() {
             return String::from("unknown");
         }
@@ -458,9 +453,57 @@ pub fn version() -> String {
     }
 }
 
+/// Version information for the MNN headers selected at build time and the
+/// native library loaded at runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVersionInfo {
+    /// Release version declared by the selected MNN headers.
+    pub selected_header: String,
+    /// Version string reported by the loaded MNN library.
+    pub runtime_library: String,
+    /// Whether both version strings match, or `None` when either is unknown.
+    pub versions_match: Option<bool>,
+}
+
+/// Compare the selected header release against the loaded library's version.
+///
+/// A match is a useful consistency check but does not establish binary ABI,
+/// build options, artifact provenance, or publisher identity.
+pub fn native_version_info() -> NativeVersionInfo {
+    let selected_header = mnn_oxide_sys::SELECTED_HEADER_VERSION.to_owned();
+    let runtime_library = version();
+    let versions_match = compare_native_versions(&selected_header, &runtime_library);
+    NativeVersionInfo {
+        selected_header,
+        runtime_library,
+        versions_match,
+    }
+}
+
+fn compare_native_versions(selected_header: &str, runtime_library: &str) -> Option<bool> {
+    let selected_header = selected_header.trim();
+    let runtime_library = runtime_library.trim();
+    if selected_header.is_empty()
+        || runtime_library.is_empty()
+        || selected_header.eq_ignore_ascii_case("unknown")
+        || runtime_library.eq_ignore_ascii_case("unknown")
+    {
+        None
+    } else {
+        Some(selected_header == runtime_library)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_version_comparison_reports_match_mismatch_and_unknown() {
+        assert_eq!(compare_native_versions("3.6.1", "3.6.1"), Some(true));
+        assert_eq!(compare_native_versions("3.6.1", "3.5.0"), Some(false));
+        assert_eq!(compare_native_versions("unknown", "3.6.1"), None);
+    }
 
     #[test]
     fn test_backend_type_name() {

@@ -23,6 +23,7 @@
 #endif
 #include <cstring>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -36,6 +37,15 @@ struct MnnTensorDeleter {
         }
     }
 };
+
+#ifdef MNN_RUNTIME_ENABLED
+// Keep MNN's public RuntimeInfo (a pair of shared runtime pointers) behind
+// the opaque C handle. Express::Executor::RuntimeManager is a separate API
+// for Expr executors and is not accepted by Interpreter::createSession.
+struct MnnRuntimeInfoHolder {
+    MNN::RuntimeInfo runtime;
+};
+#endif
 }
 
 /* ============================================================================
@@ -43,17 +53,17 @@ struct MnnTensorDeleter {
  * ============================================================================ */
 
 const char* mnn_get_version(void) {
-    return mnn_rs_abi::with_c_boundary<const char*>("", [&]() -> const char* {
+    return mnn_oxide_abi::with_c_boundary<const char*>("", [&]() -> const char* {
         return getVersion();
     });
 }
 
 const char* mnn_last_error(void) {
-    return mnn_rs_abi::error_message();
+    return mnn_oxide_abi::error_message();
 }
 
 int mnn_is_backend_available(int type) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
         // CPU is always available
         if (type == MNN_FORWARD_CPU || type == 0) {
             return 1;
@@ -67,7 +77,7 @@ int mnn_is_backend_available(int type) {
  * ============================================================================ */
 
 MNNInterpreter* mnn_interpreter_create_from_file(const char* file) {
-    return mnn_rs_abi::with_c_boundary<MNNInterpreter*>(nullptr, [&]() -> MNNInterpreter* {
+    return mnn_oxide_abi::with_c_boundary<MNNInterpreter*>(nullptr, [&]() -> MNNInterpreter* {
         if (!file) {
             return nullptr;
         }
@@ -77,7 +87,7 @@ MNNInterpreter* mnn_interpreter_create_from_file(const char* file) {
 }
 
 MNNInterpreter* mnn_interpreter_create_from_buffer(const void* buffer, size_t size) {
-    return mnn_rs_abi::with_c_boundary<MNNInterpreter*>(nullptr, [&]() -> MNNInterpreter* {
+    return mnn_oxide_abi::with_c_boundary<MNNInterpreter*>(nullptr, [&]() -> MNNInterpreter* {
         if (!buffer || size == 0) {
             return nullptr;
         }
@@ -87,7 +97,7 @@ MNNInterpreter* mnn_interpreter_create_from_buffer(const void* buffer, size_t si
 }
 
 void mnn_interpreter_destroy(MNNInterpreter* interpreter) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (interpreter) {
             Interpreter::destroy(reinterpret_cast<Interpreter*>(interpreter));
         }
@@ -95,7 +105,7 @@ void mnn_interpreter_destroy(MNNInterpreter* interpreter) {
 }
 
 MNNSession* mnn_interpreter_create_session(MNNInterpreter* interpreter, int type, int num_thread) {
-    return mnn_rs_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
+    return mnn_oxide_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
         if (!interpreter) {
             return nullptr;
         }
@@ -113,7 +123,7 @@ MNNSession* mnn_interpreter_create_session(MNNInterpreter* interpreter, int type
 }
 
 void mnn_interpreter_release_session(MNNInterpreter* interpreter, MNNSession* session) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!interpreter || !session) {
             return;
         }
@@ -125,7 +135,7 @@ void mnn_interpreter_release_session(MNNInterpreter* interpreter, MNNSession* se
 }
 
 int mnn_interpreter_run_session(MNNInterpreter* interpreter, MNNSession* session) {
-    return mnn_rs_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
         if (!interpreter || !session) {
             return MNN_ERROR_EXECUTION;
         }
@@ -138,7 +148,7 @@ int mnn_interpreter_run_session(MNNInterpreter* interpreter, MNNSession* session
 }
 
 MNNTensor* mnn_interpreter_get_session_input(MNNInterpreter* interpreter, MNNSession* session, const char* name) {
-    return mnn_rs_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
         if (!interpreter || !session) {
             return nullptr;
         }
@@ -151,7 +161,7 @@ MNNTensor* mnn_interpreter_get_session_input(MNNInterpreter* interpreter, MNNSes
 }
 
 MNNTensor* mnn_interpreter_get_session_output(MNNInterpreter* interpreter, MNNSession* session, const char* name) {
-    return mnn_rs_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
         if (!interpreter || !session) {
             return nullptr;
         }
@@ -164,7 +174,7 @@ MNNTensor* mnn_interpreter_get_session_output(MNNInterpreter* interpreter, MNNSe
 }
 
 void mnn_interpreter_resize_session(MNNInterpreter* interpreter, MNNSession* session) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!interpreter || !session) {
             return;
         }
@@ -176,7 +186,7 @@ void mnn_interpreter_resize_session(MNNInterpreter* interpreter, MNNSession* ses
 }
 
 float mnn_interpreter_get_session_memory(MNNInterpreter* interpreter, MNNSession* session) {
-    return mnn_rs_abi::with_c_boundary<float>(0.0f, [&]() -> float {
+    return mnn_oxide_abi::with_c_boundary<float>(0.0f, [&]() -> float {
         if (!interpreter || !session) {
             return 0.0f;
         }
@@ -190,7 +200,7 @@ float mnn_interpreter_get_session_memory(MNNInterpreter* interpreter, MNNSession
 }
 
 float mnn_interpreter_get_session_flops(MNNInterpreter* interpreter, MNNSession* session) {
-    return mnn_rs_abi::with_c_boundary<float>(0.0f, [&]() -> float {
+    return mnn_oxide_abi::with_c_boundary<float>(0.0f, [&]() -> float {
         if (!interpreter || !session) {
             return 0.0f;
         }
@@ -204,7 +214,7 @@ float mnn_interpreter_get_session_flops(MNNInterpreter* interpreter, MNNSession*
 }
 
 const char* mnn_interpreter_get_biz_code(MNNInterpreter* interpreter) {
-    return mnn_rs_abi::with_c_boundary<const char*>("", [&]() -> const char* {
+    return mnn_oxide_abi::with_c_boundary<const char*>("", [&]() -> const char* {
         if (!interpreter) {
             return "";
         }
@@ -215,7 +225,7 @@ const char* mnn_interpreter_get_biz_code(MNNInterpreter* interpreter) {
 }
 
 const char* mnn_interpreter_get_uuid(MNNInterpreter* interpreter) {
-    return mnn_rs_abi::with_c_boundary<const char*>("", [&]() -> const char* {
+    return mnn_oxide_abi::with_c_boundary<const char*>("", [&]() -> const char* {
         if (!interpreter) {
             return "";
         }
@@ -230,7 +240,7 @@ const char* mnn_interpreter_get_uuid(MNNInterpreter* interpreter) {
  * ============================================================================ */
 
 int mnn_tensor_get_dimensions(const MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
         if (!tensor) {
             return 0;
         }
@@ -241,7 +251,7 @@ int mnn_tensor_get_dimensions(const MNNTensor* tensor) {
 }
 
 int mnn_tensor_get_dim(const MNNTensor* tensor, int index) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
         if (!tensor || index < 0) {
             return 0;
         }
@@ -255,7 +265,7 @@ int mnn_tensor_get_dim(const MNNTensor* tensor, int index) {
 }
 
 int mnn_tensor_get_element_count(const MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
         if (!tensor) {
             return 0;
         }
@@ -266,7 +276,7 @@ int mnn_tensor_get_element_count(const MNNTensor* tensor) {
 }
 
 int mnn_tensor_get_size(const MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
         if (!tensor) {
             return 0;
         }
@@ -277,7 +287,7 @@ int mnn_tensor_get_size(const MNNTensor* tensor) {
 }
 
 void* mnn_tensor_get_host_data(MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<void*>(nullptr, [&]() -> void* {
+    return mnn_oxide_abi::with_c_boundary<void*>(nullptr, [&]() -> void* {
         if (!tensor) {
             return nullptr;
         }
@@ -288,7 +298,7 @@ void* mnn_tensor_get_host_data(MNNTensor* tensor) {
 }
 
 int mnn_tensor_get_type_code(const MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
         if (!tensor) {
             return 0;
         }
@@ -300,7 +310,7 @@ int mnn_tensor_get_type_code(const MNNTensor* tensor) {
 }
 
 int mnn_tensor_get_dimension_type(const MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
         if (!tensor) {
             return 0;
         }
@@ -317,7 +327,7 @@ int mnn_tensor_get_dimension_type(const MNNTensor* tensor) {
 #ifdef MNN_IMAGE_PROCESS
 
 MNNImageProcess* mnn_image_process_create(const MNNImageProcessConfig* config) {
-    return mnn_rs_abi::with_c_boundary<MNNImageProcess*>(nullptr, [&]() -> MNNImageProcess* {
+    return mnn_oxide_abi::with_c_boundary<MNNImageProcess*>(nullptr, [&]() -> MNNImageProcess* {
         if (!config) {
             return nullptr;
         }
@@ -339,7 +349,7 @@ MNNImageProcess* mnn_image_process_create(const MNNImageProcessConfig* config) {
 }
 
 void mnn_image_process_destroy(MNNImageProcess* process) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (process) {
             MNN::CV::ImageProcess::destroy(reinterpret_cast<MNN::CV::ImageProcess*>(process));
         }
@@ -347,7 +357,7 @@ void mnn_image_process_destroy(MNNImageProcess* process) {
 }
 
 void mnn_image_process_set_matrix(MNNImageProcess* process, const MNNMatrix* matrix) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!process || !matrix) {
             return;
         }
@@ -360,7 +370,7 @@ void mnn_image_process_set_matrix(MNNImageProcess* process, const MNNMatrix* mat
 
 int mnn_image_process_convert(MNNImageProcess* process, const uint8_t* source,
                                int iw, int ih, int stride, MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
         if (!process || !source || !tensor) {
             return MNN_ERROR_EXECUTION;
         }
@@ -374,21 +384,44 @@ int mnn_image_process_convert(MNNImageProcess* process, const uint8_t* source,
 }
 
 MNNTensor* mnn_image_tensor_create(int w, int h, int bpp, void* data) {
-    return mnn_rs_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
         if (w <= 0 || h <= 0 || bpp <= 0) {
             return nullptr;
         }
+        if (static_cast<size_t>(w) > std::numeric_limits<size_t>::max() / static_cast<size_t>(h) ||
+            static_cast<size_t>(w) * static_cast<size_t>(h) >
+                std::numeric_limits<size_t>::max() / static_cast<size_t>(bpp)) {
+            return nullptr;
+        }
+        const size_t requested_bytes = static_cast<size_t>(w) * static_cast<size_t>(h) *
+                                       static_cast<size_t>(bpp);
+        // Tensor::size() is an int in MNN 3.6.1; larger values can truncate
+        // during allocation even when size_t arithmetic itself is valid.
+        if (requested_bytes > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            return nullptr;
+        }
 
-        auto tensor = MNN::CV::ImageProcess::createImageTensor<uint8_t>(w, h, bpp, data);
+        auto tensor = MNN::CV::ImageProcess::createImageTensor<uint8_t>(w, h, bpp, nullptr);
+        if (tensor && (tensor->size() < 0 ||
+                       static_cast<size_t>(tensor->size()) < requested_bytes)) {
+            MNN::Tensor::destroy(tensor);
+            return nullptr;
+        }
+        if (tensor && data) {
+            if (tensor->host<uint8_t>() == nullptr) {
+                MNN::Tensor::destroy(tensor);
+                return nullptr;
+            }
+            std::memcpy(tensor->host<uint8_t>(), data, requested_bytes);
+        }
         return reinterpret_cast<MNNTensor*>(tensor);
     });
 }
 
 void mnn_image_tensor_destroy(MNNTensor* tensor) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (tensor) {
-            // For user-created tensors, we need to delete them
-            delete reinterpret_cast<MNN::Tensor*>(tensor);
+            MNN::Tensor::destroy(reinterpret_cast<MNN::Tensor*>(tensor));
         }
     });
 }
@@ -399,7 +432,7 @@ void mnn_image_tensor_destroy(MNNTensor* tensor) {
  * ============================================================================ */
 
 MNNTensor* mnn_imread(const char* path, int flags) {
-    return mnn_rs_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
     #ifdef MNN_IMGCODECS
         if (!path) {
             return nullptr;
@@ -449,7 +482,7 @@ MNNTensor* mnn_imread(const char* path, int flags) {
 }
 
 int mnn_imwrite(const char* path, const MNNTensor* tensor, const void* params) {
-    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
     #ifdef MNN_IMGCODECS
         if (!path || !tensor) {
             return -1;
@@ -476,7 +509,7 @@ int mnn_imwrite(const char* path, const MNNTensor* tensor, const void* params) {
 }
 
 MNNTensor* mnn_resize(const MNNTensor* src, int dstWidth, int dstHeight, int filter) {
-    return mnn_rs_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
     #ifdef MNN_BUILD_OPENCV
         if (!src || dstWidth <= 0 || dstHeight <= 0) {
             return nullptr;
@@ -552,7 +585,7 @@ MNNTensor* mnn_resize(const MNNTensor* src, int dstWidth, int dstHeight, int fil
  * ============================================================================ */
 
 MNNMatrix* mnn_matrix_create_identity(void) {
-    return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
         std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->setIdentity();
         return reinterpret_cast<MNNMatrix*>(matrix.release());
@@ -560,7 +593,7 @@ MNNMatrix* mnn_matrix_create_identity(void) {
 }
 
 MNNMatrix* mnn_matrix_create_scale(float sx, float sy) {
-    return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
         std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->setScale(sx, sy);
         return reinterpret_cast<MNNMatrix*>(matrix.release());
@@ -568,7 +601,7 @@ MNNMatrix* mnn_matrix_create_scale(float sx, float sy) {
 }
 
 MNNMatrix* mnn_matrix_create_translate(float dx, float dy) {
-    return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
         std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->setTranslate(dx, dy);
         return reinterpret_cast<MNNMatrix*>(matrix.release());
@@ -576,7 +609,7 @@ MNNMatrix* mnn_matrix_create_translate(float dx, float dy) {
 }
 
 MNNMatrix* mnn_matrix_create_rotate(float degrees) {
-    return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
         std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->setRotate(degrees);
         return reinterpret_cast<MNNMatrix*>(matrix.release());
@@ -584,7 +617,7 @@ MNNMatrix* mnn_matrix_create_rotate(float degrees) {
 }
 
 MNNMatrix* mnn_matrix_create(const float* data) {
-    return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
         if (!data) {
             return nullptr;
         }
@@ -596,7 +629,7 @@ MNNMatrix* mnn_matrix_create(const float* data) {
 }
 
 MNNMatrix* mnn_matrix_clone(const MNNMatrix* matrix) {
-    return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
         if (!matrix) {
             return nullptr;
         }
@@ -608,7 +641,7 @@ MNNMatrix* mnn_matrix_clone(const MNNMatrix* matrix) {
 }
 
 void mnn_matrix_destroy(MNNMatrix* matrix) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (matrix) {
             delete reinterpret_cast<MNN::CV::Matrix*>(matrix);
         }
@@ -616,7 +649,7 @@ void mnn_matrix_destroy(MNNMatrix* matrix) {
 }
 
 float mnn_matrix_get(const MNNMatrix* matrix, int row, int col) {
-    return mnn_rs_abi::with_c_boundary<float>(0.0f, [&]() -> float {
+    return mnn_oxide_abi::with_c_boundary<float>(0.0f, [&]() -> float {
         if (!matrix || row < 0 || row > 2 || col < 0 || col > 2) {
             return 0.0f;
         }
@@ -628,7 +661,7 @@ float mnn_matrix_get(const MNNMatrix* matrix, int row, int col) {
 }
 
 void mnn_matrix_set(MNNMatrix* matrix, int row, int col, float value) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!matrix || row < 0 || row > 2 || col < 0 || col > 2) {
             return;
         }
@@ -640,7 +673,7 @@ void mnn_matrix_set(MNNMatrix* matrix, int row, int col, float value) {
 }
 
 MNNMatrix* mnn_matrix_multiply(const MNNMatrix* a, const MNNMatrix* b) {
-    return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
         if (!a || !b) {
             return nullptr;
         }
@@ -654,7 +687,7 @@ MNNMatrix* mnn_matrix_multiply(const MNNMatrix* a, const MNNMatrix* b) {
 }
 
 MNNMatrix* mnn_matrix_invert(const MNNMatrix* matrix) {
-    return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
         if (!matrix) {
             return nullptr;
         }
@@ -673,7 +706,7 @@ MNNMatrix* mnn_matrix_invert(const MNNMatrix* matrix) {
  * ============================================================================ */
 
 int mnn_tensor_copy_from_host(MNNTensor* dest, const MNNTensor* host_tensor) {
-    return mnn_rs_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
         if (!dest || !host_tensor) {
             return MNN_ERROR_EXECUTION;
         }
@@ -687,7 +720,7 @@ int mnn_tensor_copy_from_host(MNNTensor* dest, const MNNTensor* host_tensor) {
 }
 
 int mnn_tensor_copy_to_host(MNNTensor* host_tensor, const MNNTensor* dest) {
-    return mnn_rs_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
         if (!host_tensor || !dest) {
             return MNN_ERROR_EXECUTION;
         }
@@ -706,26 +739,53 @@ MNNTensor* mnn_tensor_create_device(
     int type_code,
     int format
 ) {
-    return mnn_rs_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
-        if (!shape || dimensions <= 0) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+        // MNN 3.6.1 stores tensor dimensions in a fixed array sized by
+        // MNN_MAX_TENSOR_DIM (9).
+        if (!shape || dimensions <= 0 || dimensions > 9 || type_code < 0 ||
+            (type_code & ~0xFFFF) != 0) {
+            return nullptr;
+        }
+
+        const int type_kind = (type_code >> 8) & 0xFF;
+        const int type_bits = type_code & 0xFF;
+        const bool valid_type =
+            (type_kind == 0 && (type_bits == 8 || type_bits == 16 || type_bits == 32)) ||
+            (type_kind == 1 && type_bits == 8) ||
+            (type_kind == 2 && (type_bits == 16 || type_bits == 32 || type_bits == 64)) ||
+            (type_kind == 4 && type_bits == 16);
+        if (!valid_type) {
             return nullptr;
         }
 
         // Convert to std::vector<int>
         std::vector<int> shape_vec;
+        shape_vec.reserve(static_cast<size_t>(dimensions));
+        size_t element_count = 1;
         for (int i = 0; i < dimensions; i++) {
+            if (shape[i] <= 0 ||
+                element_count > static_cast<size_t>(std::numeric_limits<int>::max()) /
+                                    static_cast<size_t>(shape[i])) {
+                return nullptr;
+            }
+            element_count *= static_cast<size_t>(shape[i]);
             shape_vec.push_back(shape[i]);
         }
 
-        // Create device tensor using MNN's static method with default float type
-        auto tensor = MNN::Tensor::createDevice<float>(shape_vec,
-                             static_cast<MNN::Tensor::DimensionType>(format));
+        // Rust encodes Halide type and bit width in the upper/lower bytes;
+        // device tensors use one scalar lane.
+        halide_type_t type;
+        type.code = static_cast<decltype(type.code)>(type_kind);
+        type.bits = static_cast<decltype(type.bits)>(type_bits);
+        type.lanes = 1;
+        auto tensor = MNN::Tensor::createDevice(
+            shape_vec, type, static_cast<MNN::Tensor::DimensionType>(format));
         return reinterpret_cast<MNNTensor*>(tensor);
     });
 }
 
 MNNTensor* mnn_tensor_clone(const MNNTensor* tensor, int deep_copy) {
-    return mnn_rs_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
         if (!tensor) {
             return nullptr;
         }
@@ -739,7 +799,7 @@ MNNTensor* mnn_tensor_clone(const MNNTensor* tensor, int deep_copy) {
 }
 
 void mnn_tensor_destroy(MNNTensor* tensor) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (tensor) {
             MNN::Tensor::destroy(reinterpret_cast<MNN::Tensor*>(tensor));
         }
@@ -747,7 +807,7 @@ void mnn_tensor_destroy(MNNTensor* tensor) {
 }
 
 uint64_t mnn_tensor_device_id(const MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<uint64_t>(0, [&]() -> uint64_t {
+    return mnn_oxide_abi::with_c_boundary<uint64_t>(0, [&]() -> uint64_t {
         if (!tensor) {
             return 0;
         }
@@ -759,7 +819,7 @@ uint64_t mnn_tensor_device_id(const MNNTensor* tensor) {
 }
 
 int mnn_tensor_get_backend(const MNNTensor* tensor) {
-    return mnn_rs_abi::with_c_boundary<int>(MNN_FORWARD_CPU, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_FORWARD_CPU, [&]() -> int {
         if (!tensor) {
             return MNN_FORWARD_CPU;
         }
@@ -775,7 +835,7 @@ int mnn_tensor_get_backend(const MNNTensor* tensor) {
  * ============================================================================ */
 
 void mnn_interpreter_set_session_mode(MNNInterpreter* interpreter, int mode) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!interpreter) {
             return;
         }
@@ -787,7 +847,7 @@ void mnn_interpreter_set_session_mode(MNNInterpreter* interpreter, int mode) {
 }
 
 void mnn_interpreter_set_cache_file(MNNInterpreter* interpreter, const char* path, size_t key_size) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!interpreter || !path) {
             return;
         }
@@ -798,7 +858,7 @@ void mnn_interpreter_set_cache_file(MNNInterpreter* interpreter, const char* pat
 }
 
 int mnn_interpreter_update_cache(MNNInterpreter* interpreter, MNNSession* session) {
-    return mnn_rs_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
         if (!interpreter || !session) {
             return MNN_ERROR_EXECUTION;
         }
@@ -811,7 +871,7 @@ int mnn_interpreter_update_cache(MNNInterpreter* interpreter, MNNSession* sessio
 }
 
 void mnn_interpreter_set_external_file(MNNInterpreter* interpreter, const char* path, size_t flag) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!interpreter || !path) {
             return;
         }
@@ -822,7 +882,7 @@ void mnn_interpreter_set_external_file(MNNInterpreter* interpreter, const char* 
 }
 
 MNNStringArray mnn_interpreter_get_input_names(MNNInterpreter* interpreter, MNNSession* session) {
-    return mnn_rs_abi::with_c_boundary<MNNStringArray>({nullptr, 0}, [&]() -> MNNStringArray {
+    return mnn_oxide_abi::with_c_boundary<MNNStringArray>({nullptr, 0}, [&]() -> MNNStringArray {
         MNNStringArray result = { nullptr, 0 };
 
         if (!interpreter || !session) {
@@ -858,7 +918,7 @@ MNNStringArray mnn_interpreter_get_input_names(MNNInterpreter* interpreter, MNNS
 }
 
 MNNStringArray mnn_interpreter_get_output_names(MNNInterpreter* interpreter, MNNSession* session) {
-    return mnn_rs_abi::with_c_boundary<MNNStringArray>({nullptr, 0}, [&]() -> MNNStringArray {
+    return mnn_oxide_abi::with_c_boundary<MNNStringArray>({nullptr, 0}, [&]() -> MNNStringArray {
         MNNStringArray result = { nullptr, 0 };
 
         if (!interpreter || !session) {
@@ -894,7 +954,7 @@ MNNStringArray mnn_interpreter_get_output_names(MNNInterpreter* interpreter, MNN
 }
 
 void mnn_string_array_free(MNNStringArray* array) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!array || !array->names) {
             return;
         }
@@ -909,7 +969,7 @@ void mnn_string_array_free(MNNStringArray* array) {
 }
 
 void mnn_interpreter_resize_tensor(MNNInterpreter* interpreter, MNNTensor* tensor, const int* shape, int dims) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (!interpreter || !tensor || !shape || dims <= 0) {
             return;
         }
@@ -923,7 +983,7 @@ void mnn_interpreter_resize_tensor(MNNInterpreter* interpreter, MNNTensor* tenso
 }
 
 int mnn_interpreter_get_session_op_count(MNNInterpreter* interpreter, MNNSession* session) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
         if (!interpreter || !session) {
             return 0;
         }
@@ -944,17 +1004,21 @@ int mnn_interpreter_get_session_op_count(MNNInterpreter* interpreter, MNNSession
  * ============================================================================ */
 
 MNNRuntimeManager* mnn_runtime_manager_create(int type, int num_threads) {
-    return mnn_rs_abi::with_c_boundary<MNNRuntimeManager*>(nullptr, [&]() -> MNNRuntimeManager* {
+    return mnn_oxide_abi::with_c_boundary<MNNRuntimeManager*>(nullptr, [&]() -> MNNRuntimeManager* {
     #ifdef MNN_RUNTIME_ENABLED
         // Create schedule config
         ScheduleConfig config;
         config.type = static_cast<MNNForwardType>(type);
         config.numThread = num_threads > 0 ? num_threads : 4;
 
-        // Create runtime manager using MNN's Executor
-        // Note: Requires MNN with Express::Executor support
-        auto* rtmgr = MNN::Express::Executor::RuntimeManager::createRuntimeManager(config);
-        return reinterpret_cast<MNNRuntimeManager*>(rtmgr);
+        // Interpreter::createSession accepts RuntimeInfo. The similarly named
+        // Express::Executor::RuntimeManager belongs to the Expr/Module API and
+        // cannot be passed to the Interpreter session API.
+        std::vector<ScheduleConfig> configs{config};
+        auto* runtime = new MnnRuntimeInfoHolder{
+            Interpreter::createRuntime(configs)
+        };
+        return reinterpret_cast<MNNRuntimeManager*>(runtime);
     #else
         // Runtime manager not enabled, return nullptr
         (void)type;
@@ -965,12 +1029,10 @@ MNNRuntimeManager* mnn_runtime_manager_create(int type, int num_threads) {
 }
 
 void mnn_runtime_manager_destroy(MNNRuntimeManager* manager) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
     #ifdef MNN_RUNTIME_ENABLED
         if (manager) {
-            MNN::Express::Executor::RuntimeManager::destroy(
-                reinterpret_cast<MNN::Express::Executor::RuntimeManager*>(manager)
-            );
+            delete reinterpret_cast<MnnRuntimeInfoHolder*>(manager);
         }
     #else
         (void)manager;
@@ -984,23 +1046,21 @@ MNNSession* mnn_interpreter_create_session_with_runtime(
     int type,
     int num_threads
 ) {
-    return mnn_rs_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
+    return mnn_oxide_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
     #ifdef MNN_RUNTIME_ENABLED
         if (!interpreter || !runtime) {
             return nullptr;
         }
 
         auto interp = reinterpret_cast<Interpreter*>(interpreter);
-        auto rtmgr = reinterpret_cast<MNN::Express::Executor::RuntimeManager*>(runtime);
+        auto runtime_info = reinterpret_cast<MnnRuntimeInfoHolder*>(runtime);
 
         // Create session config
         ScheduleConfig config;
         config.type = static_cast<MNNForwardType>(type);
         config.numThread = num_threads > 0 ? num_threads : 4;
 
-        // Create session with runtime manager
-        // Note: This requires MNN with RuntimeManager support
-        Session* session = interp->createSession(config, rtmgr);
+        Session* session = interp->createSession(config, runtime_info->runtime);
         return reinterpret_cast<MNNSession*>(session);
     #else
         (void)interpreter;

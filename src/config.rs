@@ -34,9 +34,9 @@ impl DataFormat {
     /// Convert to MNN dimension type constant.
     pub(crate) fn to_mnn(&self) -> i32 {
         match self {
-            DataFormat::Nhwc => mnn_rs_sys::MNN_DATA_FORMAT_NHWC,
-            DataFormat::Nchw => mnn_rs_sys::MNN_DATA_FORMAT_NCHW,
-            DataFormat::Nc4hw4 => mnn_rs_sys::MNN_DATA_FORMAT_NC4HW4,
+            DataFormat::Nhwc => mnn_oxide_sys::MNN_DATA_FORMAT_NHWC,
+            DataFormat::Nchw => mnn_oxide_sys::MNN_DATA_FORMAT_NCHW,
+            DataFormat::Nc4hw4 => mnn_oxide_sys::MNN_DATA_FORMAT_NC4HW4,
         }
     }
 }
@@ -85,16 +85,16 @@ impl SessionMode {
     /// Convert to MNN constant.
     pub(crate) fn to_mnn(self) -> i32 {
         match self {
-            SessionMode::Debug => mnn_rs_sys::MNN_SESSION_MODE_DEBUG,
-            SessionMode::Release => mnn_rs_sys::MNN_SESSION_MODE_RELEASE,
-            SessionMode::InputInside => mnn_rs_sys::MNN_SESSION_MODE_INPUT_INSIDE,
-            SessionMode::InputUser => mnn_rs_sys::MNN_SESSION_MODE_INPUT_USER,
-            SessionMode::OutputInside => mnn_rs_sys::MNN_SESSION_MODE_OUTPUT_INSIDE,
-            SessionMode::OutputUser => mnn_rs_sys::MNN_SESSION_MODE_OUTPUT_USER,
-            SessionMode::ResizeDirect => mnn_rs_sys::MNN_SESSION_MODE_RESIZE_DIRECT,
-            SessionMode::ResizeDefer => mnn_rs_sys::MNN_SESSION_MODE_RESIZE_DEFER,
-            SessionMode::BackendFix => mnn_rs_sys::MNN_SESSION_MODE_BACKEND_FIX,
-            SessionMode::BackendAuto => mnn_rs_sys::MNN_SESSION_MODE_BACKEND_AUTO,
+            SessionMode::Debug => mnn_oxide_sys::MNN_SESSION_MODE_DEBUG,
+            SessionMode::Release => mnn_oxide_sys::MNN_SESSION_MODE_RELEASE,
+            SessionMode::InputInside => mnn_oxide_sys::MNN_SESSION_MODE_INPUT_INSIDE,
+            SessionMode::InputUser => mnn_oxide_sys::MNN_SESSION_MODE_INPUT_USER,
+            SessionMode::OutputInside => mnn_oxide_sys::MNN_SESSION_MODE_OUTPUT_INSIDE,
+            SessionMode::OutputUser => mnn_oxide_sys::MNN_SESSION_MODE_OUTPUT_USER,
+            SessionMode::ResizeDirect => mnn_oxide_sys::MNN_SESSION_MODE_RESIZE_DIRECT,
+            SessionMode::ResizeDefer => mnn_oxide_sys::MNN_SESSION_MODE_RESIZE_DEFER,
+            SessionMode::BackendFix => mnn_oxide_sys::MNN_SESSION_MODE_BACKEND_FIX,
+            SessionMode::BackendAuto => mnn_oxide_sys::MNN_SESSION_MODE_BACKEND_AUTO,
         }
     }
 }

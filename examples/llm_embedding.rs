@@ -11,7 +11,7 @@
 //! cargo run --example llm_embedding --features llm,build-from-source --no-default-features -- /path/to/model/config.json
 //! ```
 
-use mnn_rs::{Embedding, MnnResult};
+use mnn_oxide::{Embedding, MnnResult};
 
 fn main() -> MnnResult<()> {
     let config_path = std::env::args()

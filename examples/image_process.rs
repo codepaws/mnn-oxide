@@ -15,14 +15,12 @@
 //! ```
 
 #[cfg(feature = "image-process")]
-use mnn_rs::{
-    imread, imwrite,
-    ImageConfig, ImageFormat, ImageProcess, Matrix, Filter, Wrap,
-    ImreadFlags,
+use mnn_oxide::{
+    imread, imwrite, Filter, ImageConfig, ImageFormat, ImageProcess, ImreadFlags, Matrix, Wrap,
 };
 
 #[cfg(feature = "image-process")]
-fn main() -> Result<(), mnn_rs::MnnError> {
+fn main() -> Result<(), mnn_oxide::MnnError> {
     use std::env;
     use std::path::Path;
 
@@ -30,7 +28,9 @@ fn main() -> Result<(), mnn_rs::MnnError> {
 
     // Parse command line arguments
     let input_path = env::args().nth(1).unwrap_or_else(|| String::new());
-    let output_path = env::args().nth(2).unwrap_or_else(|| "output.png".to_string());
+    let output_path = env::args()
+        .nth(2)
+        .unwrap_or_else(|| "output.png".to_string());
 
     // Check if input path is provided and exists
     let use_test_image = input_path.is_empty() || !Path::new(&input_path).exists();
@@ -48,9 +48,12 @@ fn main() -> Result<(), mnn_rs::MnnError> {
             .map(|i| {
                 let x = (i / 3) % width as usize;
                 let y = (i / 3) / width as usize;
-                let r = ((x * 255 / width as usize) as u8).wrapping_add((y * 100 / height as usize) as u8);
-                let g = ((x * 100 / width as usize) as u8).wrapping_add((y * 255 / height as usize) as u8);
-                let b = ((x * 128 / width as usize) as u8).wrapping_add((y * 128 / height as usize) as u8);
+                let r = ((x * 255 / width as usize) as u8)
+                    .wrapping_add((y * 100 / height as usize) as u8);
+                let g = ((x * 100 / width as usize) as u8)
+                    .wrapping_add((y * 255 / height as usize) as u8);
+                let b = ((x * 128 / width as usize) as u8)
+                    .wrapping_add((y * 128 / height as usize) as u8);
                 [r, g, b][i % 3]
             })
             .collect();
@@ -73,7 +76,7 @@ fn main() -> Result<(), mnn_rs::MnnError> {
                 };
 
                 println!("  Loaded: {}x{}x{}", width, height, channels);
-                println!("  Dtype: {}", img.dtype());
+                println!("  Dtype: {}", img.dtype()?);
 
                 let image_data: Vec<u8> = img.read()?;
                 println!("  Read {} bytes", image_data.len());
@@ -109,7 +112,7 @@ fn process_image(
     target_height: i32,
     output_path: &str,
     loaded_from_file: bool,
-) -> Result<(), mnn_rs::MnnError> {
+) -> Result<(), mnn_oxide::MnnError> {
     println!("\n[Step 2] Creating ImageProcess configuration");
 
     // Create config: RGB to BGR conversion with bilinear filtering
@@ -140,11 +143,10 @@ fn process_image(
     println!("\n[Step 4] Creating output tensor");
 
     // Create output tensor (224x224x3 BGR)
-    let mut output_tensor = ImageProcess::create_image_tensor(
-        target_width, target_height, 3, None
-    )?;
+    let mut output_tensor =
+        ImageProcess::create_image_tensor(target_width, target_height, 3, None)?;
     println!("  Tensor shape: {:?}", output_tensor.shape());
-    println!("  Tensor dtype: {}", output_tensor.dtype());
+    println!("  Tensor dtype: {}", output_tensor.dtype()?);
 
     println!("\n[Step 5] Converting image (resize + RGB→BGR)");
 
@@ -153,7 +155,7 @@ fn process_image(
         image_data,
         src_width,
         src_height,
-        0,  // stride (auto = width * channels)
+        0, // stride (auto = width * channels)
         &mut output_tensor,
     )?;
     println!("  Conversion completed");
@@ -176,16 +178,20 @@ fn process_image(
     println!("\n  Sample pixels (BGR order):");
     for i in 0..3.min(output_data.len() / 3) {
         let idx = i * 3;
-        println!("    [{}]: B={}, G={}, R={}", i,
-                 output_data[idx], output_data[idx + 1], output_data[idx + 2]);
+        println!(
+            "    [{}]: B={}, G={}, R={}",
+            i,
+            output_data[idx],
+            output_data[idx + 1],
+            output_data[idx + 2]
+        );
     }
 
     println!("\n[Step 7] Saving result");
 
     // Create tensor for saving
-    let save_tensor = ImageProcess::create_image_tensor(
-        target_width, target_height, 3, Some(&output_data),
-    )?;
+    let save_tensor =
+        ImageProcess::create_image_tensor(target_width, target_height, 3, Some(&output_data))?;
 
     // Try to save using MNN CV imwrite
     match imwrite(output_path, &save_tensor) {

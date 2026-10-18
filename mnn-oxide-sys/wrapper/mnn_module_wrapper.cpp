@@ -8,7 +8,7 @@
 
 #ifdef MNN_MODULE_ENABLED
 #include <MNN/expr/Module.hpp>
-#include <MNN/expr/Expr.hpp>
+#include <MNN/expr/ExprCreator.hpp>
 #include <MNN/expr/Executor.hpp>
 #else
 // Stub implementation when MNN_MODULE_ENABLED is not defined
@@ -60,7 +60,7 @@ MNNModule* mnn_module_load_from_file(
     const char* file_path,
     const MNNModuleConfig* config
 ) {
-    return mnn_rs_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
+    return mnn_oxide_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
 #ifdef MNN_MODULE_ENABLED
     if (!file_path || !inputs || !outputs || input_count <= 0 || output_count <= 0) {
         return nullptr;
@@ -91,7 +91,7 @@ MNNModule* mnn_module_load_from_buffer(
     const uint8_t* buffer, size_t buffer_size,
     const MNNModuleConfig* config
 ) {
-    return mnn_rs_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
+    return mnn_oxide_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
 #ifdef MNN_MODULE_ENABLED
     if (!buffer || buffer_size == 0 || !inputs || !outputs || input_count <= 0 || output_count <= 0) {
         return nullptr;
@@ -117,7 +117,7 @@ MNNModule* mnn_module_load_from_buffer(
 }
 
 void mnn_module_destroy(MNNModule* module) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
 #ifdef MNN_MODULE_ENABLED
     if (module) {
         delete reinterpret_cast<Module*>(module);
@@ -130,7 +130,7 @@ void mnn_module_destroy(MNNModule* module) {
 }
 
 MNNModule* mnn_module_clone(const MNNModule* module, bool share_params) {
-    return mnn_rs_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
+    return mnn_oxide_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return nullptr;
 
@@ -144,7 +144,7 @@ MNNModule* mnn_module_clone(const MNNModule* module, bool share_params) {
 }
 
 MNNVar* mnn_module_forward(MNNModule* module, const MNNVar* input) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!module || !input) return nullptr;
 
@@ -163,7 +163,7 @@ MNNVar* mnn_module_forward(MNNModule* module, const MNNVar* input) {
 MNNVar** mnn_module_forward_multi(MNNModule* module,
                                    const MNNVar** inputs, int input_count,
                                    int* output_count) {
-    return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
+    return mnn_oxide_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
     if (output_count) *output_count = 0;
 #ifdef MNN_MODULE_ENABLED
     if (!module || !inputs || input_count <= 0 || !output_count) return nullptr;
@@ -201,7 +201,7 @@ MNNVar** mnn_module_forward_multi(MNNModule* module,
 }
 
 void mnn_var_array_free(MNNVar** vars, int count) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
         if (vars == nullptr) return;
 #ifdef MNN_MODULE_ENABLED
         for (int i = 0; i < count; ++i) {
@@ -215,11 +215,11 @@ void mnn_var_array_free(MNNVar** vars, int count) {
 }
 
 int mnn_module_get_parameter_count(const MNNModule* module) {
-    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return 0;
 
-    auto* m = reinterpret_cast<const Module*>(module);
+    auto* m = reinterpret_cast<Module*>(const_cast<MNNModule*>(module));
     auto params = m->parameters();
     return static_cast<int>(params.size());
 #else
@@ -230,12 +230,12 @@ int mnn_module_get_parameter_count(const MNNModule* module) {
 }
 
 MNNVar** mnn_module_get_parameters(const MNNModule* module, int* count) {
-    return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
+    return mnn_oxide_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
     if (count) *count = 0;
 #ifdef MNN_MODULE_ENABLED
     if (!module || !count) return nullptr;
 
-    auto* m = reinterpret_cast<const Module*>(module);
+    auto* m = reinterpret_cast<Module*>(const_cast<MNNModule*>(module));
     auto params = m->parameters();
 
     if (params.empty()) return nullptr;
@@ -261,7 +261,7 @@ MNNVar** mnn_module_get_parameters(const MNNModule* module, int* count) {
 }
 
 void mnn_module_set_training(MNNModule* module, bool is_training) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return;
 
@@ -276,11 +276,11 @@ void mnn_module_set_training(MNNModule* module, bool is_training) {
 }
 
 bool mnn_module_is_training(const MNNModule* module) {
-    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+    return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return false;
 
-    auto* m = reinterpret_cast<const Module*>(module);
+    auto* m = reinterpret_cast<Module*>(const_cast<MNNModule*>(module));
     return m->getIsTraining();
 #else
     return false;
@@ -290,7 +290,7 @@ bool mnn_module_is_training(const MNNModule* module) {
 }
 
 const char* mnn_module_get_name(const MNNModule* module) {
-    return mnn_rs_abi::with_c_boundary<const char*>(nullptr, [&]() -> const char* {
+    return mnn_oxide_abi::with_c_boundary<const char*>(nullptr, [&]() -> const char* {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return "";
 
@@ -306,7 +306,7 @@ const char* mnn_module_get_name(const MNNModule* module) {
 }
 
 void mnn_module_set_name(MNNModule* module, const char* name) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
 #ifdef MNN_MODULE_ENABLED
     if (!module || !name) return;
 
@@ -327,14 +327,18 @@ void mnn_module_set_name(MNNModule* module, const char* name) {
 MNNVar* mnn_var_create_input(const int* shape, int dim_count,
                               MNNDimensionFormat format,
                               int type_code, int type_bits) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!shape || dim_count <= 0) return nullptr;
 
     auto shape_vec = to_int_vector(shape, dim_count);
 
     // Create input variable
-    VARP var = Variable::createInput(shape_vec, static_cast<Dimensionformat>(format));
+    halide_type_t type{};
+    type.code = static_cast<decltype(type.code)>(type_code);
+    type.bits = static_cast<decltype(type.bits)>(type_bits);
+    type.lanes = 1;
+    VARP var = _Input(shape_vec, static_cast<Dimensionformat>(format), type);
     return reinterpret_cast<MNNVar*>(new VARP(var));
 #else
     return nullptr;
@@ -346,7 +350,7 @@ MNNVar* mnn_var_create_input(const int* shape, int dim_count,
 MNNVar* mnn_var_create_constant_float(const float* data,
                                        const int* shape, int dim_count,
                                        MNNDimensionFormat format) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!data || !shape || dim_count <= 0) return nullptr;
 
@@ -363,7 +367,7 @@ MNNVar* mnn_var_create_constant_float(const float* data,
 }
 
 void mnn_var_destroy(MNNVar* var) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
 #ifdef MNN_MODULE_ENABLED
     if (var) {
         delete reinterpret_cast<VARP*>(var);
@@ -376,28 +380,35 @@ void mnn_var_destroy(MNNVar* var) {
 }
 
 MNNVarInfo* mnn_var_get_info(const MNNVar* var) {
-    return mnn_rs_abi::with_c_boundary<MNNVarInfo*>(nullptr, [&]() -> MNNVarInfo* {
+    return mnn_oxide_abi::with_c_boundary<MNNVarInfo*>(nullptr, [&]() -> MNNVarInfo* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
     auto* v = reinterpret_cast<const VARP*>(var);
     if (!v->get()) return nullptr;
 
-    MNNVarInfo* info = new MNNVarInfo;
-    memset(info, 0, sizeof(MNNVarInfo));
+    auto* variable = v->get();
+    const auto* variable_info = variable->getInfo();
+    if (!variable_info) return nullptr;
 
-    auto shape = v->getInfo()->dim;
+    auto shape = variable_info->dim;
+    if (shape.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return nullptr;
+    }
+
+    std::unique_ptr<MNNVarInfo> info(new MNNVarInfo{});
+    std::unique_ptr<int[]> ownedShape(new int[shape.size()]);
+    std::copy(shape.begin(), shape.end(), ownedShape.get());
+
     info->dim_count = static_cast<int>(shape.size());
-    info->shape = new int[info->dim_count];
-    std::copy(shape.begin(), shape.end(), info->shape);
-
-    auto type = v->getInfo()->type;
+    auto type = variable_info->type;
     info->type_code = static_cast<int>(type.code);
     info->type_bits = type.bits;
 
-    info->format = static_cast<MNNDimensionFormat>(v->getInfo()->order);
+    info->format = static_cast<MNNDimensionFormat>(variable_info->order);
+    info->shape = ownedShape.release();
 
-    return info;
+    return info.release();
 #else
     return nullptr;
 #endif
@@ -406,7 +417,7 @@ MNNVarInfo* mnn_var_get_info(const MNNVar* var) {
 }
 
 void mnn_var_info_free(MNNVarInfo* info) {
-    mnn_rs_abi::with_c_boundary_void([&] {
+    mnn_oxide_abi::with_c_boundary_void([&] {
     if (!info) return;
 
     if (info->shape) {
@@ -418,7 +429,7 @@ void mnn_var_info_free(MNNVarInfo* info) {
 }
 
 float* mnn_var_read_float(const MNNVar* var, int* count) {
-    return mnn_rs_abi::with_c_boundary<float*>(nullptr, [&]() -> float* {
+    return mnn_oxide_abi::with_c_boundary<float*>(nullptr, [&]() -> float* {
     if (count) *count = 0;
 #ifdef MNN_MODULE_ENABLED
     if (!var || !count) return nullptr;
@@ -426,7 +437,9 @@ float* mnn_var_read_float(const MNNVar* var, int* count) {
     auto* v = reinterpret_cast<const VARP*>(var);
 
     // Get info
-    auto info = v->getInfo();
+    auto* variable = v->get();
+    if (!variable) return nullptr;
+    auto info = variable->getInfo();
     if (!info) return nullptr;
 
     size_t element_count = 1;
@@ -454,7 +467,7 @@ float* mnn_var_read_float(const MNNVar* var, int* count) {
 }
 
 bool mnn_var_write_float(MNNVar* var, const float* data, int count) {
-    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+    return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !data || count <= 0) return false;
 
@@ -471,16 +484,17 @@ bool mnn_var_write_float(MNNVar* var, const float* data, int count) {
 }
 
 int* mnn_var_get_shape(const MNNVar* var, int* count) {
-    return mnn_rs_abi::with_c_boundary<int*>(nullptr, [&]() -> int* {
+    return mnn_oxide_abi::with_c_boundary<int*>(nullptr, [&]() -> int* {
     if (count) *count = 0;
 #ifdef MNN_MODULE_ENABLED
     if (!var || !count) return nullptr;
 
     auto* v = reinterpret_cast<const VARP*>(var);
-    if (!v->get()) return nullptr;
-
-    auto info = v->getInfo();
-    if (!info || info->dim.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
+    auto* variable = v->get();
+    if (!variable) return nullptr;
+    auto info = variable->getInfo();
+    if (!info) return nullptr;
+    if (info->dim.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
     auto shape = info->dim;
 
     std::unique_ptr<int[]> result(new int[shape.size()]);
@@ -501,7 +515,7 @@ int* mnn_var_get_shape(const MNNVar* var, int* count) {
  * ============================================================================ */
 
 MNNVar* mnn_var_add(const MNNVar* a, const MNNVar* b) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!a || !b) return nullptr;
 
@@ -518,7 +532,7 @@ MNNVar* mnn_var_add(const MNNVar* a, const MNNVar* b) {
 }
 
 MNNVar* mnn_var_sub(const MNNVar* a, const MNNVar* b) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!a || !b) return nullptr;
 
@@ -535,7 +549,7 @@ MNNVar* mnn_var_sub(const MNNVar* a, const MNNVar* b) {
 }
 
 MNNVar* mnn_var_mul(const MNNVar* a, const MNNVar* b) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!a || !b) return nullptr;
 
@@ -552,7 +566,7 @@ MNNVar* mnn_var_mul(const MNNVar* a, const MNNVar* b) {
 }
 
 MNNVar* mnn_var_div(const MNNVar* a, const MNNVar* b) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!a || !b) return nullptr;
 
@@ -573,7 +587,7 @@ MNNVar* mnn_var_div(const MNNVar* a, const MNNVar* b) {
  * ============================================================================ */
 
 MNNVar* mnn_var_sum(const MNNVar* var, const int* axes, int axis_count, bool keep_dims) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -594,7 +608,7 @@ MNNVar* mnn_var_sum(const MNNVar* var, const int* axes, int axis_count, bool kee
 }
 
 MNNVar* mnn_var_mean(const MNNVar* var, const int* axes, int axis_count, bool keep_dims) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -612,7 +626,7 @@ MNNVar* mnn_var_mean(const MNNVar* var, const int* axes, int axis_count, bool ke
 }
 
 MNNVar* mnn_var_max(const MNNVar* var, const int* axes, int axis_count, bool keep_dims) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -630,7 +644,7 @@ MNNVar* mnn_var_max(const MNNVar* var, const int* axes, int axis_count, bool kee
 }
 
 MNNVar* mnn_var_min(const MNNVar* var, const int* axes, int axis_count, bool keep_dims) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -652,7 +666,7 @@ MNNVar* mnn_var_min(const MNNVar* var, const int* axes, int axis_count, bool kee
  * ============================================================================ */
 
 MNNVar* mnn_var_reshape(const MNNVar* var, const int* shape, int dim_count) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !shape || dim_count <= 0) return nullptr;
 
@@ -669,7 +683,7 @@ MNNVar* mnn_var_reshape(const MNNVar* var, const int* shape, int dim_count) {
 }
 
 MNNVar* mnn_var_transpose(const MNNVar* var, const int* perm, int dim_count) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !perm || dim_count <= 0) return nullptr;
 
@@ -686,7 +700,7 @@ MNNVar* mnn_var_transpose(const MNNVar* var, const int* perm, int dim_count) {
 }
 
 MNNVar* mnn_var_concat(const MNNVar** vars, int var_count, int axis) {
-    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
+    return mnn_oxide_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!vars || var_count <= 0) return nullptr;
 
@@ -708,14 +722,30 @@ MNNVar* mnn_var_concat(const MNNVar** vars, int var_count, int axis) {
 }
 
 MNNVar** mnn_var_split(const MNNVar* var, int splits, int axis, int* output_count) {
-    return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
+    return mnn_oxide_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
     if (output_count) *output_count = 0;
 #ifdef MNN_MODULE_ENABLED
     if (!var || !output_count || splits <= 0) return nullptr;
 
     auto* v = reinterpret_cast<const VARP*>(var);
 
-    auto results = _Split(*v, splits, axis);
+    auto* variable = v->get();
+    if (!variable) return nullptr;
+    auto* info = variable->getInfo();
+    if (!info || info->dim.empty()) return nullptr;
+
+    int normalized_axis = axis;
+    if (normalized_axis < 0) {
+        normalized_axis += static_cast<int>(info->dim.size());
+    }
+    if (normalized_axis < 0 || normalized_axis >= static_cast<int>(info->dim.size())) {
+        return nullptr;
+    }
+    const int axis_size = info->dim[static_cast<size_t>(normalized_axis)];
+    if (axis_size <= 0 || axis_size % splits != 0) return nullptr;
+
+    INTS split_sizes(static_cast<size_t>(splits), axis_size / splits);
+    auto results = _Split(*v, std::move(split_sizes), axis);
     if (results.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
 
     std::unique_ptr<MNNVar*[]> result(new MNNVar*[results.size()]());
