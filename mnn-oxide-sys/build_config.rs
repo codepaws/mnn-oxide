@@ -154,6 +154,11 @@ pub fn native_link_name() -> &'static str {
     "MNN"
 }
 
+/// MNN builds its Linux CUDA backend as a separate shared library.
+pub fn cuda_companion_library_name(target_os: &str) -> Option<&'static str> {
+    (target_os == "linux").then_some("MNN_Cuda_Main")
+}
+
 /// Check for the exact case-sensitive library filename selected by the
 /// linker configuration. Windows dynamic artifacts also need the DLL.
 #[cfg(any(feature = "use-prebuilt", test))]
@@ -466,6 +471,13 @@ mod tests {
             "libMNN.dll.a"
         );
         assert_eq!(native_link_name(), "MNN");
+    }
+
+    #[test]
+    fn cuda_companion_is_a_linux_shared_library_only() {
+        assert_eq!(cuda_companion_library_name("linux"), Some("MNN_Cuda_Main"));
+        assert_eq!(cuda_companion_library_name("windows"), None);
+        assert_eq!(cuda_companion_library_name("macos"), None);
     }
 
     #[test]

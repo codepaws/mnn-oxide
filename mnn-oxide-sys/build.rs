@@ -520,6 +520,11 @@ fn main() {
         link_type,
         build_config::native_link_name()
     );
+    if build_from_source && cfg!(feature = "cuda") {
+        if let Some(cuda_companion) = build_config::cuda_companion_library_name(&target_os) {
+            println!("cargo:rustc-link-lib=dylib={cuda_companion}");
+        }
+    }
 
     // Configure platform-specific settings
     configure_platform(&target_os, &target_env);
@@ -921,6 +926,7 @@ fn build_mnn_from_source(
         ));
 
     if lib_path.exists() && !need_rebuild {
+        install_cuda_companion_library(build_dir, &install_dir, target_os);
         if debug {
             println!(
                 "cargo:warning=mnn-oxide-sys: Using cached MNN build at {:?}",
@@ -1378,6 +1384,8 @@ fn build_mnn_from_source(
         }
     }
 
+    install_cuda_companion_library(build_dir, &install_dir, target_os);
+
     // Copy CV headers if image-process feature is enabled
     // MNN CMake doesn't install CV headers by default
     if cfg!(feature = "image-process") {
@@ -1474,6 +1482,51 @@ fn build_mnn_from_source(
     }
 
     (lib_dir, include_dir)
+}
+
+/// MNN 3.6.1 installs libMNN.so but leaves its Linux CUDA shared backend in
+/// the build tree. Stage it beside MNN so Cargo can link the complete backend
+/// and consumers receive the required runtime companion in the install dir.
+#[cfg(feature = "build-from-source")]
+fn install_cuda_companion_library(
+    build_dir: &std::path::Path,
+    install_dir: &std::path::Path,
+    target_os: &str,
+) {
+    if !cfg!(feature = "cuda") || build_config::cuda_companion_library_name(target_os).is_none() {
+        return;
+    }
+
+    let file_name = "libMNN_Cuda_Main.so";
+    let destination = install_dir.join("lib").join(file_name);
+    if destination.is_file() {
+        return;
+    }
+
+    let candidates = [
+        build_dir.join("source/backend/cuda").join(file_name),
+        build_dir
+            .join("source-tree-tracked/source/backend/cuda")
+            .join(file_name),
+    ];
+    let source = candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "MNN CUDA was enabled, but its shared backend {file_name} was not produced under {}",
+                build_dir.display()
+            )
+        });
+    std::fs::create_dir_all(destination.parent().expect("install lib parent exists"))
+        .expect("failed to create MNN install library directory");
+    std::fs::copy(source, &destination).unwrap_or_else(|error| {
+        panic!(
+            "failed to stage MNN CUDA backend {} to {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    });
 }
 
 /// Copy a directory recursively
