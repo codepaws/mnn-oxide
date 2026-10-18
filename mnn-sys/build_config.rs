@@ -4,6 +4,7 @@
 pub enum AcquisitionMode {
     BringYourOwn,
     Source,
+    Prebuilt,
 }
 
 pub fn validate_acquisition(
@@ -20,7 +21,13 @@ pub fn validate_acquisition(
         return Err("use-prebuilt and build-from-source cannot be combined".into());
     }
     if prebuilt {
-        return Err("use-prebuilt acquisition is not implemented".into());
+        if system || has_lib_path {
+            return Err(
+                "use-prebuilt cannot be combined with system mode or MNN_LIB_DIR/MNN_INCLUDE_DIR"
+                    .into(),
+            );
+        }
+        return Ok(AcquisitionMode::Prebuilt);
     }
     if source {
         if system || has_lib_path {
@@ -35,6 +42,72 @@ pub fn validate_acquisition(
         return Ok(AcquisitionMode::BringYourOwn);
     }
     Err("configure MNN_LIB_DIR and MNN_INCLUDE_DIR explicitly".into())
+}
+
+#[cfg(any(feature = "use-prebuilt", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrebuiltConfig {
+    pub url: String,
+    pub sha256: String,
+    pub target: String,
+    pub version: String,
+    pub cache_dir: std::path::PathBuf,
+}
+
+#[cfg(any(feature = "use-prebuilt", test))]
+pub fn validate_prebuilt_config(
+    url: Option<&str>,
+    sha256: Option<&str>,
+    target: Option<&str>,
+    version: Option<&str>,
+    cache_dir: Option<&str>,
+    cargo_target: &str,
+) -> Result<PrebuiltConfig, String> {
+    fn required<'a>(value: Option<&'a str>, name: &str) -> Result<&'a str, String> {
+        value
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| format!("use-prebuilt requires {name}"))
+    }
+    let url = required(url, "MNN_PREBUILT_URL")?;
+    if !url.starts_with("https://")
+        || url
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+    {
+        return Err("MNN_PREBUILT_URL must be an HTTPS URL without whitespace".into());
+    }
+    let sha256 = required(sha256, "MNN_PREBUILT_SHA256")?;
+    if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("MNN_PREBUILT_SHA256 must contain exactly 64 hexadecimal characters".into());
+    }
+    let target = required(target, "MNN_PREBUILT_TARGET")?;
+    if target != cargo_target {
+        return Err(format!(
+            "MNN_PREBUILT_TARGET ({target}) must match Cargo target ({cargo_target})"
+        ));
+    }
+    let version = required(version, "MNN_PREBUILT_VERSION")?;
+    for (name, value) in [
+        ("MNN_PREBUILT_TARGET", target),
+        ("MNN_PREBUILT_VERSION", version),
+    ] {
+        if !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err(format!(
+                "{name} may contain only ASCII letters, digits, '.', '_' and '-'"
+            ));
+        }
+    }
+    let cache_dir = std::path::PathBuf::from(required(cache_dir, "MNN_PREBUILT_CACHE_DIR")?);
+    Ok(PrebuiltConfig {
+        url: url.to_owned(),
+        sha256: sha256.to_ascii_lowercase(),
+        target: target.to_owned(),
+        version: version.to_owned(),
+        cache_dir,
+    })
 }
 
 pub fn is_full_commit_sha(value: &str) -> bool {
@@ -111,6 +184,85 @@ mod tests {
             Ok(AcquisitionMode::Source)
         );
         assert!(validate_acquisition(false, false, true, false, false).is_err());
+        assert_eq!(
+            validate_acquisition(true, false, false, false, false),
+            Ok(AcquisitionMode::Prebuilt)
+        );
+        assert!(validate_acquisition(true, false, true, false, false).is_err());
+        assert!(validate_acquisition(true, false, false, true, true).is_err());
+    }
+
+    #[test]
+    fn prebuilt_config_requires_https_sha_target_version_and_cache() {
+        let target = "x86_64-unknown-linux-gnu";
+        let digest = "a".repeat(64);
+        let valid = || {
+            validate_prebuilt_config(
+                Some("https://example.invalid/mnn.tar.gz"),
+                Some(&digest),
+                Some(target),
+                Some("3.6.1"),
+                Some("cache"),
+                target,
+            )
+        };
+        assert!(valid().is_ok());
+        assert_eq!(valid().unwrap().sha256, digest);
+        assert!(validate_prebuilt_config(
+            None,
+            Some(&digest),
+            Some(target),
+            Some("3.6.1"),
+            Some("cache"),
+            target
+        )
+        .unwrap_err()
+        .contains("MNN_PREBUILT_URL"));
+        assert!(validate_prebuilt_config(
+            Some("http://example.invalid/mnn.tar.gz"),
+            Some(&digest),
+            Some(target),
+            Some("3.6.1"),
+            Some("cache"),
+            target
+        )
+        .is_err());
+        assert!(validate_prebuilt_config(
+            Some("https://example.invalid/mnn.tar.gz"),
+            Some("abc"),
+            Some(target),
+            Some("3.6.1"),
+            Some("cache"),
+            target
+        )
+        .is_err());
+        assert!(validate_prebuilt_config(
+            Some("https://example.invalid/mnn.tar.gz"),
+            Some(&digest),
+            Some("aarch64-unknown-linux-gnu"),
+            Some("3.6.1"),
+            Some("cache"),
+            target
+        )
+        .is_err());
+        assert!(validate_prebuilt_config(
+            Some("https://example.invalid/mnn.tar.gz"),
+            Some(&digest),
+            Some(target),
+            Some("../3.6.1"),
+            Some("cache"),
+            target
+        )
+        .is_err());
+        assert!(validate_prebuilt_config(
+            Some("https://example.invalid/mnn.tar.gz"),
+            Some(&digest),
+            Some(target),
+            Some("3.6.1"),
+            None,
+            target
+        )
+        .is_err());
     }
 
     #[test]

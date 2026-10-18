@@ -6,6 +6,9 @@ use std::process::Command;
 
 #[path = "build_config.rs"]
 mod build_config;
+#[cfg(feature = "use-prebuilt")]
+#[path = "prebuilt.rs"]
+mod prebuilt;
 
 #[cfg(feature = "build-from-source")]
 use std::collections::hash_map::DefaultHasher;
@@ -68,6 +71,16 @@ fn main() {
     let mnn_version = env::var("MNN_SOURCE_VERSION").ok();
     let mnn_lib_dir = env::var("MNN_LIB_DIR").ok();
     let mnn_include_dir = env::var("MNN_INCLUDE_DIR").ok();
+    #[cfg(feature = "use-prebuilt")]
+    let prebuilt_url = env::var("MNN_PREBUILT_URL").ok();
+    #[cfg(feature = "use-prebuilt")]
+    let prebuilt_sha256 = env::var("MNN_PREBUILT_SHA256").ok();
+    #[cfg(feature = "use-prebuilt")]
+    let prebuilt_target = env::var("MNN_PREBUILT_TARGET").ok();
+    #[cfg(feature = "use-prebuilt")]
+    let prebuilt_version = env::var("MNN_PREBUILT_VERSION").ok();
+    #[cfg(feature = "use-prebuilt")]
+    let prebuilt_cache_dir = env::var("MNN_PREBUILT_CACHE_DIR").ok();
     let _mnn_use_system = env::var("MNN_USE_SYSTEM").is_ok() || cfg!(feature = "system-mnn");
     let build_from_source = cfg!(feature = "build-from-source");
     let use_prebuilt = cfg!(feature = "use-prebuilt");
@@ -141,6 +154,24 @@ fn main() {
             mnn_lib_dir.as_ref().map(|p| PathBuf::from(p)),
             mnn_include_dir.as_ref().map(|p| PathBuf::from(p)),
         )
+    } else if mode == build_config::AcquisitionMode::Prebuilt {
+        #[cfg(feature = "use-prebuilt")]
+        {
+            let config = build_config::validate_prebuilt_config(
+                prebuilt_url.as_deref(),
+                prebuilt_sha256.as_deref(),
+                prebuilt_target.as_deref(),
+                prebuilt_version.as_deref(),
+                prebuilt_cache_dir.as_deref(),
+                &target,
+            )
+            .unwrap_or_else(|message| panic!("MNN prebuilt configuration error: {message}"));
+            let (lib, include) = prebuilt::acquire(&config, use_static)
+                .unwrap_or_else(|message| panic!("MNN prebuilt acquisition failed: {message}"));
+            (Some(lib), Some(include))
+        }
+        #[cfg(not(feature = "use-prebuilt"))]
+        unreachable!("prebuilt mode cannot be selected without the use-prebuilt feature")
     } else if build_from_source {
         get_lib_and_include_dirs(
             true,
@@ -412,6 +443,11 @@ fn main() {
     // Tell Cargo to re-run if relevant env vars change
     println!("cargo:rerun-if-env-changed=MNN_SOURCE_PATH");
     println!("cargo:rerun-if-env-changed=MNN_SOURCE_VERSION");
+    println!("cargo:rerun-if-env-changed=MNN_PREBUILT_URL");
+    println!("cargo:rerun-if-env-changed=MNN_PREBUILT_SHA256");
+    println!("cargo:rerun-if-env-changed=MNN_PREBUILT_TARGET");
+    println!("cargo:rerun-if-env-changed=MNN_PREBUILT_VERSION");
+    println!("cargo:rerun-if-env-changed=MNN_PREBUILT_CACHE_DIR");
     println!("cargo:rerun-if-env-changed=MNN_LIB_DIR");
     println!("cargo:rerun-if-env-changed=MNN_INCLUDE_DIR");
     println!("cargo:rerun-if-env-changed=MNN_USE_SYSTEM");

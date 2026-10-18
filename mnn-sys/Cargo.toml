@@ -41,8 +41,8 @@ avx2 = []
 avx512 = []
 
 # Build options
-# Explicitly unsupported until pinned, checksum-verified artifacts are available.
-use-prebuilt = []
+# Opt-in user-supplied archive; no URL or artifact is selected by this package.
+use-prebuilt = ["ureq", "sha2", "flate2", "tar"]
 # Build from an existing MNN checkout pinned with MNN_SOURCE_VERSION.
 build-from-source = ["cmake", "num_cpus"]
 # Use system-installed MNN
@@ -71,8 +71,18 @@ cmake = { workspace = true, optional = true }
 pkg-config = { workspace = true }
 cc = "1.0"
 num_cpus = { version = "1.16", optional = true }
+ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
+sha2 = { version = "0.10", optional = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+tar = { version = "0.4", default-features = false, optional = true }
 
 [dependencies]
+
+[dev-dependencies]
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+sha2 = "0.10"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { version = "0.4", default-features = false }
 
 [package.metadata.docs.rs]
 # docs.rs doesn't have network access or cmake, so we skip native library linking

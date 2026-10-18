@@ -49,7 +49,20 @@ set MNN_INCLUDE_DIR=C:\path\to\mnn\include
 cargo build --no-default-features --features cpu,dynamic,system-mnn
 ```
 
-The `use-prebuilt` feature currently returns an explicit unsupported-mode error. A future prebuilt mode must pin its artifact and verify its checksum. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Static and dynamic linking are selected explicitly with `static` or `dynamic`.
+Prebuilt acquisition is opt-in and accepts only an artifact you supply: Cargo downloads it only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain `include/MNN/Interpreter.hpp` and a root `lib/` directory with a library filename recognized for the selected target and static/dynamic link mode; its exact bytes are verified against your SHA-256 before extraction. This project does not publish or select a prebuilt MNN artifact. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Static and dynamic linking are selected explicitly with `static` or `dynamic`.
+
+To use a user-supplied prebuilt archive, set all five variables below. `MNN_PREBUILT_TARGET` must exactly match Cargo's target triple (for example, `x86_64-unknown-linux-gnu`); `MNN_PREBUILT_VERSION` is a cache label chosen by you. The cache stores the verified archive and re-extracts it safely on each build. Archive symlinks, hard links, special files, and paths escaping the archive root are rejected.
+
+```bash
+export MNN_PREBUILT_URL=https://example.invalid/path/to/your-mnn.tar.gz
+export MNN_PREBUILT_SHA256=REPLACE_WITH_64_HEX_CHARACTER_SHA256
+export MNN_PREBUILT_TARGET=x86_64-unknown-linux-gnu
+export MNN_PREBUILT_VERSION=3.6.1-your-build-label
+export MNN_PREBUILT_CACHE_DIR="$HOME/.cache/mnn-rs"
+cargo build --no-default-features --features cpu,static,use-prebuilt
+```
+
+Replace the example URL and placeholder checksum with values from your own artifact source. The example is not a published release or a valid checksum; do not copy it literally.
 
 On MSVC, the C++ wrapper is compiled with the CRT matching the link mode:
 `/MT` for static MNN, `/MD` for dynamic MNN. If your MNN library was built
@@ -175,7 +188,7 @@ fn main() -> Result<(), mnn_rs::MnnError> {
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `use-prebuilt` | | Unsupported until pinned, checksum-verified artifacts are implemented |
+| `use-prebuilt` | | Opt-in download of a user-supplied HTTPS tar.gz, verified by SHA-256; requires the five `MNN_PREBUILT_*` variables |
 | `build-from-source` | | Build MNN from an existing checkout pinned to a full commit SHA |
 | `system-mnn` | | Use system-installed MNN library |
 
@@ -267,7 +280,7 @@ cargo build --target aarch64-linux-android --features build-from-source --no-def
 - `x86_64-linux-android`
 - `i686-linux-android`
 
-No Android prebuilt acquisition is implemented. Supply explicit target-compatible MNN library and header paths.
+No first-party Android prebuilt is selected or qualified. The generic `use-prebuilt` route can consume your target-compatible archive; otherwise supply explicit MNN library and header paths.
 
 **Building from source requirements:**
 - Android NDK (set `ANDROID_NDK_HOME` or `NDK_HOME` environment variable)
@@ -295,7 +308,7 @@ cargo build --target x86_64-apple-ios --no-default-features --features cpu,stati
 - `aarch64-apple-ios-sim` (iOS simulator on Apple Silicon)
 - `x86_64-apple-ios` (iOS simulator on Intel Macs)
 
-No iOS prebuilt acquisition is implemented. Supply explicit target-compatible MNN library and header paths.
+No first-party iOS prebuilt is selected or qualified. The generic `use-prebuilt` route can consume your target-compatible archive; otherwise supply explicit MNN library and header paths.
 
 ### Linux
 
@@ -335,6 +348,11 @@ cargo build --target x86_64-pc-windows-gnu --no-default-features --features cpu,
 |----------|-------------|
 | `MNN_SOURCE_PATH` | Existing MNN source checkout for explicit source builds |
 | `MNN_SOURCE_VERSION` | Full 40-character commit SHA matching `MNN_SOURCE_PATH` |
+| `MNN_PREBUILT_URL` | HTTPS URL for a user-supplied MNN `.tar.gz` archive; used only with `use-prebuilt` |
+| `MNN_PREBUILT_SHA256` | Expected 64-character hexadecimal SHA-256 of the exact archive bytes |
+| `MNN_PREBUILT_TARGET` | Cargo target triple for the artifact; must match the current build target |
+| `MNN_PREBUILT_VERSION` | User-defined artifact version/cache label, limited to ASCII letters, digits, `.`, `_`, and `-` |
+| `MNN_PREBUILT_CACHE_DIR` | Required cache directory for the verified archive and safe extraction |
 | `MNN_LIB_DIR` | Path to pre-built MNN library |
 | `MNN_INCLUDE_DIR` | Path to MNN headers |
 | `MNN_DEBUG_BUILD` | Print debug information during build |
@@ -349,7 +367,7 @@ See [https://docs.rs/mnn-rs](https://docs.rs/mnn-rs) for full API documentation.
 
 ## MNN Version
 
-No prebuilt MNN artifact is currently selected or qualified by this crate. Source builds are pinned to the exact commit SHA in `MNN_SOURCE_VERSION`.
+No prebuilt MNN artifact is selected, published, or qualified by this crate. The `use-prebuilt` route accepts a user-supplied archive and verifies its checksum; compatibility and native runtime behavior remain the artifact provider's responsibility. Source builds are pinned to the exact commit SHA in `MNN_SOURCE_VERSION`.
 
 ## License
 

@@ -67,7 +67,7 @@ avx512 = ["mnn-rs-sys/avx512"]
 async = ["dep:tokio"]
 
 # Build options
-# Explicitly unsupported until pinned, checksum-verified artifacts are available.
+# Opt-in user-supplied artifact; requires explicit URL, digest, target, version, and cache.
 use-prebuilt = ["mnn-rs-sys/use-prebuilt"]
 # Explicit source build from an existing checkout at a full commit SHA.
 build-from-source = ["mnn-rs-sys/build-from-source"]
