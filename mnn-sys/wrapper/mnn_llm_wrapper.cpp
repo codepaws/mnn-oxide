@@ -7,6 +7,7 @@
  */
 
 #include "mnn_llm_wrapper.h"
+#include "mnn_abi_guard.h"
 
 #include <llm/llm.hpp>
 
@@ -135,43 +136,48 @@ struct MNNEmbeddingHandle {
  * ============================================================================ */
 
 MNNLlm* mnn_llm_create(const char* config_path) {
-    if (config_path == nullptr) {
-        return nullptr;
-    }
-    MNN::Transformer::Llm* llm = MNN::Transformer::Llm::createLLM(config_path);
-    if (llm == nullptr) {
-        return nullptr;
-    }
-    MNNLlmHandle* handle = new MNNLlmHandle();
-    handle->llm = llm;
-    return reinterpret_cast<MNNLlm*>(handle);
+    return mnn_rs_abi::with_c_boundary<MNNLlm*>(nullptr, [&]() -> MNNLlm* {
+        if (config_path == nullptr) {
+            return nullptr;
+        }
+        std::unique_ptr<MNNLlmHandle> handle(new MNNLlmHandle());
+        handle->llm = MNN::Transformer::Llm::createLLM(config_path);
+        if (handle->llm == nullptr) {
+            return nullptr;
+        }
+        return reinterpret_cast<MNNLlm*>(handle.release());
+    });
 }
 
 void mnn_llm_destroy(MNNLlm* llm) {
-    if (llm == nullptr) {
-        return;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    // Drop streaming resources before releasing the LLM itself.
-    handle->os.reset();
-    handle->stream.reset();
-    if (handle->llm != nullptr) {
-        // MUST use the static destroy; it owns internal lifetime bookkeeping.
-        MNN::Transformer::Llm::destroy(handle->llm);
-        handle->llm = nullptr;
-    }
-    delete handle;
+    mnn_rs_abi::with_c_boundary_void([&] {
+        if (llm == nullptr) {
+            return;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        // Drop streaming resources before releasing the LLM itself.
+        handle->os.reset();
+        handle->stream.reset();
+        if (handle->llm != nullptr) {
+            // MUST use the static destroy; it owns internal lifetime bookkeeping.
+            MNN::Transformer::Llm::destroy(handle->llm);
+            handle->llm = nullptr;
+        }
+        delete handle;
+    });
 }
 
 bool mnn_llm_load(MNNLlm* llm) {
-    if (llm == nullptr) {
-        return false;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return false;
-    }
-    return handle->llm->load();
+    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+        if (llm == nullptr) {
+            return false;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return false;
+        }
+        return handle->llm->load();
+    });
 }
 
 /* ============================================================================
@@ -179,35 +185,39 @@ bool mnn_llm_load(MNNLlm* llm) {
  * ============================================================================ */
 
 char* mnn_llm_response_text(MNNLlm* llm, const char* text, int max_new_tokens) {
-    if (llm == nullptr || text == nullptr) {
-        return nullptr;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return nullptr;
-    }
-    std::ostringstream oss;
-    handle->llm->response(std::string(text), &oss, nullptr, max_new_tokens);
-    return dup_string(oss.str());
+    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+        if (llm == nullptr || text == nullptr) {
+            return nullptr;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return nullptr;
+        }
+        std::ostringstream oss;
+        handle->llm->response(std::string(text), &oss, nullptr, max_new_tokens);
+        return dup_string(oss.str());
+    });
 }
 
 char* mnn_llm_response_messages(MNNLlm* llm, const char* const* roles,
                                 const char* const* contents, int n,
                                 int max_new_tokens) {
-    if (llm == nullptr) {
-        return nullptr;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return nullptr;
-    }
-    MNN::Transformer::ChatMessages messages = build_messages(roles, contents, n);
-    if (messages.empty()) {
-        return nullptr;
-    }
-    std::ostringstream oss;
-    handle->llm->response(messages, &oss, nullptr, max_new_tokens);
-    return dup_string(oss.str());
+    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+        if (llm == nullptr) {
+            return nullptr;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return nullptr;
+        }
+        MNN::Transformer::ChatMessages messages = build_messages(roles, contents, n);
+        if (messages.empty()) {
+            return nullptr;
+        }
+        std::ostringstream oss;
+        handle->llm->response(messages, &oss, nullptr, max_new_tokens);
+        return dup_string(oss.str());
+    });
 }
 
 /* ============================================================================
@@ -216,27 +226,29 @@ char* mnn_llm_response_messages(MNNLlm* llm, const char* const* roles,
 
 int mnn_llm_generate_tokens(MNNLlm* llm, const int* input_ids, int n,
                             int max_new_tokens, int* out, int* out_n) {
-    if (llm == nullptr || input_ids == nullptr || n <= 0 || out == nullptr ||
-        out_n == nullptr) {
-        return -1;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return -1;
-    }
-    const int capacity = *out_n;
-    if (capacity <= 0) {
-        return -1;
-    }
-    std::vector<int> ids(input_ids, input_ids + n);
-    std::vector<int> result = handle->llm->generate(ids, max_new_tokens);
-    const int actual = static_cast<int>(result.size());
-    const int copied = actual < capacity ? actual : capacity;
-    if (copied > 0) {
-        memcpy(out, result.data(), sizeof(int) * static_cast<size_t>(copied));
-    }
-    *out_n = actual;
-    return actual;
+    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (llm == nullptr || input_ids == nullptr || n <= 0 || out == nullptr ||
+            out_n == nullptr) {
+            return -1;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return -1;
+        }
+        const int capacity = *out_n;
+        if (capacity <= 0) {
+            return -1;
+        }
+        std::vector<int> ids(input_ids, input_ids + n);
+        std::vector<int> result = handle->llm->generate(ids, max_new_tokens);
+        const int actual = static_cast<int>(result.size());
+        const int copied = actual < capacity ? actual : capacity;
+        if (copied > 0) {
+            memcpy(out, result.data(), sizeof(int) * static_cast<size_t>(copied));
+        }
+        *out_n = actual;
+        return actual;
+    });
 }
 
 /* ============================================================================
@@ -245,48 +257,54 @@ int mnn_llm_generate_tokens(MNNLlm* llm, const int* input_ids, int n,
 
 void mnn_llm_generate_init(MNNLlm* llm, const char* text, mnn_llm_text_cb cb,
                            void* userdata, const char* end_with) {
-    if (llm == nullptr || text == nullptr) {
-        return;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return;
-    }
-    handle->stream = std::make_shared<LlmStreamBuf>(cb, userdata);
-    handle->os = std::make_shared<std::ostream>(handle->stream.get());
+    mnn_rs_abi::with_c_boundary_void([&] {
+        if (llm == nullptr || text == nullptr) {
+            return;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return;
+        }
+        handle->stream = std::make_shared<LlmStreamBuf>(cb, userdata);
+        handle->os = std::make_shared<std::ostream>(handle->stream.get());
 
-    // Feed the prompt (prefill) without generating any token, mirroring
-    // MNN's `Llm::response(input_ids, os, end_with, 0)` used by llm_demo:
-    // generate_init + prefill, then the caller loops `generate(1)`.
-    // Apply the chat template exactly like `Llm::response(std::string, ...)`
-    // would, but avoid its unconditional `std::cout << "prompt: ..."`.
-    std::string templated = handle->llm->apply_chat_template(std::string(text));
-    std::vector<int> input_ids = handle->llm->tokenizer_encode(
-        templated.empty() ? std::string(text) : templated);
-    handle->llm->response(input_ids, handle->os.get(), end_with, 0);
+        // Feed the prompt (prefill) without generating any token, mirroring
+        // MNN's `Llm::response(input_ids, os, end_with, 0)` used by llm_demo:
+        // generate_init + prefill, then the caller loops `generate(1)`.
+        // Apply the chat template exactly like `Llm::response(std::string, ...)`
+        // would, but avoid its unconditional `std::cout << "prompt: ..."`.
+        std::string templated = handle->llm->apply_chat_template(std::string(text));
+        std::vector<int> input_ids = handle->llm->tokenizer_encode(
+            templated.empty() ? std::string(text) : templated);
+        handle->llm->response(input_ids, handle->os.get(), end_with, 0);
+    });
 }
 
 bool mnn_llm_generate_step(MNNLlm* llm, int max_token) {
-    if (llm == nullptr) {
-        return false;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return false;
-    }
-    handle->llm->generate(max_token);
-    return handle->llm->stoped();
+    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+        if (llm == nullptr) {
+            return false;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return false;
+        }
+        handle->llm->generate(max_token);
+        return handle->llm->stoped();
+    });
 }
 
 bool mnn_llm_stoped(MNNLlm* llm) {
-    if (llm == nullptr) {
-        return false;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return false;
-    }
-    return handle->llm->stoped();
+    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+        if (llm == nullptr) {
+            return false;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return false;
+        }
+        return handle->llm->stoped();
+    });
 }
 
 /* ============================================================================
@@ -294,50 +312,56 @@ bool mnn_llm_stoped(MNNLlm* llm) {
  * ============================================================================ */
 
 int* mnn_llm_tokenizer_encode(MNNLlm* llm, const char* text, int* out_n) {
-    if (out_n != nullptr) {
-        *out_n = 0;
-    }
-    if (llm == nullptr || text == nullptr || out_n == nullptr) {
-        return nullptr;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return nullptr;
-    }
-    std::vector<int> ids = handle->llm->tokenizer_encode(std::string(text));
-    if (ids.empty()) {
-        return nullptr;
-    }
-    const size_t count = ids.size();
-    int* arr = static_cast<int*>(malloc(sizeof(int) * count));
-    if (arr == nullptr) {
-        return nullptr;
-    }
-    memcpy(arr, ids.data(), sizeof(int) * count);
-    *out_n = static_cast<int>(count);
-    return arr;
+    return mnn_rs_abi::with_c_boundary<int*>(nullptr, [&]() -> int* {
+        if (out_n != nullptr) {
+            *out_n = 0;
+        }
+        if (llm == nullptr || text == nullptr || out_n == nullptr) {
+            return nullptr;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return nullptr;
+        }
+        std::vector<int> ids = handle->llm->tokenizer_encode(std::string(text));
+        if (ids.empty()) {
+            return nullptr;
+        }
+        const size_t count = ids.size();
+        int* arr = static_cast<int*>(malloc(sizeof(int) * count));
+        if (arr == nullptr) {
+            return nullptr;
+        }
+        memcpy(arr, ids.data(), sizeof(int) * count);
+        *out_n = static_cast<int>(count);
+        return arr;
+    });
 }
 
 char* mnn_llm_tokenizer_decode(MNNLlm* llm, int token) {
-    if (llm == nullptr) {
-        return nullptr;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return nullptr;
-    }
-    return dup_string(handle->llm->tokenizer_decode(token));
+    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+        if (llm == nullptr) {
+            return nullptr;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return nullptr;
+        }
+        return dup_string(handle->llm->tokenizer_decode(token));
+    });
 }
 
 bool mnn_llm_is_stop(MNNLlm* llm, int token) {
-    if (llm == nullptr) {
-        return false;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return false;
-    }
-    return handle->llm->is_stop(token);
+    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+        if (llm == nullptr) {
+            return false;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return false;
+        }
+        return handle->llm->is_stop(token);
+    });
 }
 
 /* ============================================================================
@@ -345,53 +369,61 @@ bool mnn_llm_is_stop(MNNLlm* llm, int token) {
  * ============================================================================ */
 
 char* mnn_llm_apply_chat_template(MNNLlm* llm, const char* text) {
-    if (llm == nullptr || text == nullptr) {
-        return nullptr;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return nullptr;
-    }
-    return dup_string(handle->llm->apply_chat_template(std::string(text)));
+    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+        if (llm == nullptr || text == nullptr) {
+            return nullptr;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return nullptr;
+        }
+        return dup_string(handle->llm->apply_chat_template(std::string(text)));
+    });
 }
 
 char* mnn_llm_apply_chat_template_messages(MNNLlm* llm,
                                            const char* const* roles,
                                            const char* const* contents, int n) {
-    if (llm == nullptr) {
-        return nullptr;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return nullptr;
-    }
-    MNN::Transformer::ChatMessages messages = build_messages(roles, contents, n);
-    if (messages.empty()) {
-        return nullptr;
-    }
-    return dup_string(handle->llm->apply_chat_template(messages));
+    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+        if (llm == nullptr) {
+            return nullptr;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return nullptr;
+        }
+        MNN::Transformer::ChatMessages messages = build_messages(roles, contents, n);
+        if (messages.empty()) {
+            return nullptr;
+        }
+        return dup_string(handle->llm->apply_chat_template(messages));
+    });
 }
 
 bool mnn_llm_set_config(MNNLlm* llm, const char* json) {
-    if (llm == nullptr || json == nullptr) {
-        return false;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return false;
-    }
-    return handle->llm->set_config(std::string(json));
+    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+        if (llm == nullptr || json == nullptr) {
+            return false;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return false;
+        }
+        return handle->llm->set_config(std::string(json));
+    });
 }
 
 char* mnn_llm_dump_config(MNNLlm* llm) {
-    if (llm == nullptr) {
-        return nullptr;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return nullptr;
-    }
-    return dup_string(handle->llm->dump_config());
+    return mnn_rs_abi::with_c_boundary<char*>(nullptr, [&]() -> char* {
+        if (llm == nullptr) {
+            return nullptr;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return nullptr;
+        }
+        return dup_string(handle->llm->dump_config());
+    });
 }
 
 /* ============================================================================
@@ -399,62 +431,70 @@ char* mnn_llm_dump_config(MNNLlm* llm) {
  * ============================================================================ */
 
 void mnn_llm_reset(MNNLlm* llm) {
-    if (llm == nullptr) {
-        return;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return;
-    }
-    handle->llm->reset();
+    mnn_rs_abi::with_c_boundary_void([&] {
+        if (llm == nullptr) {
+            return;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return;
+        }
+        handle->llm->reset();
+    });
 }
 
 bool mnn_llm_reuse_kv(MNNLlm* llm) {
-    if (llm == nullptr) {
-        return false;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return false;
-    }
-    return handle->llm->reuse_kv();
+    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
+        if (llm == nullptr) {
+            return false;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return false;
+        }
+        return handle->llm->reuse_kv();
+    });
 }
 
 int mnn_llm_get_status(MNNLlm* llm) {
-    if (llm == nullptr) {
-        return -2;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return -2;
-    }
-    const MNN::Transformer::LlmContext* ctx = handle->llm->getContext();
-    if (ctx == nullptr) {
-        return -2;
-    }
-    return static_cast<int>(ctx->status);
+    return mnn_rs_abi::with_c_boundary<int>(-2, [&]() -> int {
+        if (llm == nullptr) {
+            return -2;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return -2;
+        }
+        const MNN::Transformer::LlmContext* ctx = handle->llm->getContext();
+        if (ctx == nullptr) {
+            return -2;
+        }
+        return static_cast<int>(ctx->status);
+    });
 }
 
 int mnn_llm_get_context(MNNLlm* llm, MNNLlmContext* out) {
-    if (llm == nullptr || out == nullptr) {
-        return -1;
-    }
-    MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
-    if (handle->llm == nullptr) {
-        return -1;
-    }
-    const MNN::Transformer::LlmContext* ctx = handle->llm->getContext();
-    if (ctx == nullptr) {
-        return -1;
-    }
-    out->prompt_len = ctx->prompt_len;
-    out->gen_seq_len = ctx->gen_seq_len;
-    out->all_seq_len = ctx->all_seq_len;
-    out->load_us = ctx->load_us;
-    out->prefill_us = ctx->prefill_us;
-    out->decode_us = ctx->decode_us;
-    out->sample_us = ctx->sample_us;
-    return 0;
+    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (llm == nullptr || out == nullptr) {
+            return -1;
+        }
+        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        if (handle->llm == nullptr) {
+            return -1;
+        }
+        const MNN::Transformer::LlmContext* ctx = handle->llm->getContext();
+        if (ctx == nullptr) {
+            return -1;
+        }
+        out->prompt_len = ctx->prompt_len;
+        out->gen_seq_len = ctx->gen_seq_len;
+        out->all_seq_len = ctx->all_seq_len;
+        out->load_us = ctx->load_us;
+        out->prefill_us = ctx->prefill_us;
+        out->decode_us = ctx->decode_us;
+        out->sample_us = ctx->sample_us;
+        return 0;
+    });
 }
 
 /* ============================================================================
@@ -462,11 +502,15 @@ int mnn_llm_get_context(MNNLlm* llm, MNNLlmContext* out) {
  * ============================================================================ */
 
 void mnn_string_free(char* s) {
-    free(s);
+    mnn_rs_abi::with_c_boundary_void([&] {
+        free(s);
+    });
 }
 
 void mnn_int_array_free(int* p) {
-    free(p);
+    mnn_rs_abi::with_c_boundary_void([&] {
+        free(p);
+    });
 }
 
 /* ============================================================================
@@ -474,68 +518,77 @@ void mnn_int_array_free(int* p) {
  * ============================================================================ */
 
 MNNEmbedding* mnn_embedding_create(const char* config_path, bool load) {
-    if (config_path == nullptr) {
-        return nullptr;
-    }
-    MNN::Transformer::Embedding* emb =
-        MNN::Transformer::Embedding::createEmbedding(config_path, load);
-    if (emb == nullptr) {
-        return nullptr;
-    }
-    MNNEmbeddingHandle* handle = new MNNEmbeddingHandle();
-    handle->emb = emb;
-    return reinterpret_cast<MNNEmbedding*>(handle);
+    return mnn_rs_abi::with_c_boundary<MNNEmbedding*>(nullptr, [&]() -> MNNEmbedding* {
+        if (config_path == nullptr) {
+            return nullptr;
+        }
+        std::unique_ptr<MNNEmbeddingHandle> handle(new MNNEmbeddingHandle());
+        handle->emb =
+            MNN::Transformer::Embedding::createEmbedding(config_path, load);
+        if (handle->emb == nullptr) {
+            return nullptr;
+        }
+        return reinterpret_cast<MNNEmbedding*>(handle.release());
+    });
 }
 
 void mnn_embedding_destroy(MNNEmbedding* embedding) {
-    if (embedding == nullptr) {
-        return;
-    }
-    MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
-    if (handle->emb != nullptr) {
-        // Embedding derives from Llm, so the static Llm::destroy must be used.
-        MNN::Transformer::Llm::destroy(handle->emb);
-        handle->emb = nullptr;
-    }
-    delete handle;
+    mnn_rs_abi::with_c_boundary_void([&] {
+        if (embedding == nullptr) {
+            return;
+        }
+        MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
+        if (handle->emb != nullptr) {
+            // Embedding derives from Llm, so the static Llm::destroy must be used.
+            MNN::Transformer::Llm::destroy(handle->emb);
+            handle->emb = nullptr;
+        }
+        delete handle;
+    });
 }
 
 int mnn_embedding_dim(MNNEmbedding* embedding) {
-    if (embedding == nullptr) {
-        return -1;
-    }
-    MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
-    if (handle->emb == nullptr) {
-        return -1;
-    }
-    return handle->emb->dim();
+    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (embedding == nullptr) {
+            return -1;
+        }
+        MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
+        if (handle->emb == nullptr) {
+            return -1;
+        }
+        return handle->emb->dim();
+    });
 }
 
 int mnn_embedding_txt(MNNEmbedding* embedding, const char* text, float* out,
                       int out_cap) {
-    if (embedding == nullptr || text == nullptr || out == nullptr ||
-        out_cap <= 0) {
-        return -1;
-    }
-    MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
-    if (handle->emb == nullptr) {
-        return -1;
-    }
-    MNN::Express::VARP var = handle->emb->txt_embedding(std::string(text));
-    return copy_embedding(var, out, out_cap);
+    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (embedding == nullptr || text == nullptr || out == nullptr ||
+            out_cap <= 0) {
+            return -1;
+        }
+        MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
+        if (handle->emb == nullptr) {
+            return -1;
+        }
+        MNN::Express::VARP var = handle->emb->txt_embedding(std::string(text));
+        return copy_embedding(var, out, out_cap);
+    });
 }
 
 int mnn_embedding_ids(MNNEmbedding* embedding, const int* ids, int n, float* out,
                       int out_cap) {
-    if (embedding == nullptr || ids == nullptr || n <= 0 || out == nullptr ||
-        out_cap <= 0) {
-        return -1;
-    }
-    MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
-    if (handle->emb == nullptr) {
-        return -1;
-    }
-    std::vector<int> id_vec(ids, ids + n);
-    MNN::Express::VARP var = handle->emb->ids_embedding(id_vec);
-    return copy_embedding(var, out, out_cap);
+    return mnn_rs_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (embedding == nullptr || ids == nullptr || n <= 0 || out == nullptr ||
+            out_cap <= 0) {
+            return -1;
+        }
+        MNNEmbeddingHandle* handle = reinterpret_cast<MNNEmbeddingHandle*>(embedding);
+        if (handle->emb == nullptr) {
+            return -1;
+        }
+        std::vector<int> id_vec(ids, ids + n);
+        MNN::Express::VARP var = handle->emb->ids_embedding(id_vec);
+        return copy_embedding(var, out, out_cap);
+    });
 }
