@@ -72,13 +72,14 @@ pub struct MNNMatrix {
 
 /// Backend type for computation (matches MNNForwardType)
 pub const MNN_FORWARD_CPU: c_int = 0;
-pub const MNN_FORWARD_AUTO: c_int = 0;
-pub const MNN_FORWARD_OPENCL: c_int = 1;
-pub const MNN_FORWARD_OPENGL: c_int = 2;
-pub const MNN_FORWARD_VULKAN: c_int = 3;
-pub const MNN_FORWARD_METAL: c_int = 4;
-pub const MNN_FORWARD_CUDA: c_int = 5;
-pub const MNN_FORWARD_NPU: c_int = 6;
+pub const MNN_FORWARD_AUTO: c_int = 4;
+pub const MNN_FORWARD_OPENCL: c_int = 3;
+pub const MNN_FORWARD_OPENGL: c_int = 6;
+pub const MNN_FORWARD_VULKAN: c_int = 7;
+pub const MNN_FORWARD_METAL: c_int = 1;
+pub const MNN_FORWARD_CUDA: c_int = 2;
+/// Compatibility alias for MNN's generic `MNN_FORWARD_USER_0` slot.
+pub const MNN_FORWARD_NPU: c_int = 8;
 
 /// Error codes
 pub const MNN_ERROR_NONE: c_int = 0;
@@ -765,4 +766,16 @@ extern "C" {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    #[test]
+    fn forward_type_constants_match_mnn_3_6_1_header() {
+        assert_eq!(super::MNN_FORWARD_CPU, 0);
+        assert_eq!(super::MNN_FORWARD_METAL, 1);
+        assert_eq!(super::MNN_FORWARD_CUDA, 2);
+        assert_eq!(super::MNN_FORWARD_OPENCL, 3);
+        assert_eq!(super::MNN_FORWARD_AUTO, 4);
+        assert_eq!(super::MNN_FORWARD_OPENGL, 6);
+        assert_eq!(super::MNN_FORWARD_VULKAN, 7);
+        assert_eq!(super::MNN_FORWARD_NPU, 8);
+    }
+}
