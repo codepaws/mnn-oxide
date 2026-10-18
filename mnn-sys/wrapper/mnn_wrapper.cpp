@@ -28,6 +28,16 @@
 
 using namespace MNN;
 
+namespace {
+struct MnnTensorDeleter {
+    void operator()(MNN::Tensor* tensor) const {
+        if (tensor) {
+            MNN::Tensor::destroy(tensor);
+        }
+    }
+};
+}
+
 /* ============================================================================
  * Version and Info
  * ============================================================================ */
@@ -414,7 +424,8 @@ MNNTensor* mnn_imread(const char* path, int flags) {
         auto dims = tensor->shape();
 
         // Create a new tensor with the same shape and type
-        auto owned_tensor = MNN::Tensor::create(dims, type, nullptr, MNN::Tensor::DimensionType::TENSORFLOW);
+        std::unique_ptr<MNN::Tensor, MnnTensorDeleter> owned_tensor(
+            MNN::Tensor::create(dims, type, nullptr, MNN::Tensor::DimensionType::TENSORFLOW));
         if (!owned_tensor) {
             return nullptr;
         }
@@ -428,7 +439,7 @@ MNNTensor* mnn_imread(const char* path, int flags) {
         }
 
         // Return the owned tensor (caller must destroy it using mnn_tensor_destroy)
-        return reinterpret_cast<MNNTensor*>(owned_tensor);
+        return reinterpret_cast<MNNTensor*>(owned_tensor.release());
     #else
         (void)path;
         (void)flags;
@@ -508,7 +519,8 @@ MNNTensor* mnn_resize(const MNNTensor* src, int dstWidth, int dstHeight, int fil
         auto dims = tensor->shape();
 
         // Create a new tensor with the same shape and type
-        auto owned_tensor = MNN::Tensor::create(dims, type, nullptr, MNN::Tensor::DimensionType::TENSORFLOW);
+        std::unique_ptr<MNN::Tensor, MnnTensorDeleter> owned_tensor(
+            MNN::Tensor::create(dims, type, nullptr, MNN::Tensor::DimensionType::TENSORFLOW));
         if (!owned_tensor) {
             return nullptr;
         }
@@ -522,7 +534,7 @@ MNNTensor* mnn_resize(const MNNTensor* src, int dstWidth, int dstHeight, int fil
         }
 
         // Return the owned tensor (caller must destroy it using mnn_tensor_destroy)
-        return reinterpret_cast<MNNTensor*>(owned_tensor);
+        return reinterpret_cast<MNNTensor*>(owned_tensor.release());
     #else
         (void)src;
         (void)dstWidth;
@@ -541,33 +553,33 @@ MNNTensor* mnn_resize(const MNNTensor* src, int dstWidth, int dstHeight, int fil
 
 MNNMatrix* mnn_matrix_create_identity(void) {
     return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
-        auto matrix = new MNN::CV::Matrix();
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->setIdentity();
-        return reinterpret_cast<MNNMatrix*>(matrix);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
     });
 }
 
 MNNMatrix* mnn_matrix_create_scale(float sx, float sy) {
     return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
-        auto matrix = new MNN::CV::Matrix();
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->setScale(sx, sy);
-        return reinterpret_cast<MNNMatrix*>(matrix);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
     });
 }
 
 MNNMatrix* mnn_matrix_create_translate(float dx, float dy) {
     return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
-        auto matrix = new MNN::CV::Matrix();
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->setTranslate(dx, dy);
-        return reinterpret_cast<MNNMatrix*>(matrix);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
     });
 }
 
 MNNMatrix* mnn_matrix_create_rotate(float degrees) {
     return mnn_rs_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
-        auto matrix = new MNN::CV::Matrix();
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->setRotate(degrees);
-        return reinterpret_cast<MNNMatrix*>(matrix);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
     });
 }
 
@@ -577,9 +589,9 @@ MNNMatrix* mnn_matrix_create(const float* data) {
             return nullptr;
         }
 
-        auto matrix = new MNN::CV::Matrix();
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
         matrix->set9(data);
-        return reinterpret_cast<MNNMatrix*>(matrix);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
     });
 }
 
@@ -590,8 +602,8 @@ MNNMatrix* mnn_matrix_clone(const MNNMatrix* matrix) {
         }
 
         auto src = reinterpret_cast<const MNN::CV::Matrix*>(matrix);
-        auto dst = new MNN::CV::Matrix(*src);
-        return reinterpret_cast<MNNMatrix*>(dst);
+        std::unique_ptr<MNN::CV::Matrix> dst(new MNN::CV::Matrix(*src));
+        return reinterpret_cast<MNNMatrix*>(dst.release());
     });
 }
 
@@ -635,9 +647,9 @@ MNNMatrix* mnn_matrix_multiply(const MNNMatrix* a, const MNNMatrix* b) {
 
         auto ma = reinterpret_cast<const MNN::CV::Matrix*>(a);
         auto mb = reinterpret_cast<const MNN::CV::Matrix*>(b);
-        auto result = new MNN::CV::Matrix();
+        std::unique_ptr<MNN::CV::Matrix> result(new MNN::CV::Matrix());
         result->setConcat(*ma, *mb);
-        return reinterpret_cast<MNNMatrix*>(result);
+        return reinterpret_cast<MNNMatrix*>(result.release());
     });
 }
 
@@ -648,12 +660,11 @@ MNNMatrix* mnn_matrix_invert(const MNNMatrix* matrix) {
         }
 
         auto m = reinterpret_cast<const MNN::CV::Matrix*>(matrix);
-        auto result = new MNN::CV::Matrix();
-        if (!m->invert(result)) {
-            delete result;
+        std::unique_ptr<MNN::CV::Matrix> result(new MNN::CV::Matrix());
+        if (!m->invert(result.get())) {
             return nullptr;
         }
-        return reinterpret_cast<MNNMatrix*>(result);
+        return reinterpret_cast<MNNMatrix*>(result.release());
     });
 }
 

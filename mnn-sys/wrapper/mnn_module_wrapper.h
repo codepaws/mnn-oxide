@@ -115,6 +115,8 @@ MNNVar* mnn_module_forward(MNNModule* module, const MNNVar* input);
 MNNVar** mnn_module_forward_multi(MNNModule* module,
                                    const MNNVar** inputs, int input_count,
                                    int* output_count);
+/** Destroy each variable and release an array returned by a multi-result API. */
+void mnn_var_array_free(MNNVar** vars, int count);
 
 /** Get module parameter count */
 int mnn_module_get_parameter_count(const MNNModule* module);

@@ -18,6 +18,8 @@
 #include <cstring>
 #include <algorithm>
 #include <string>
+#include <memory>
+#include <limits>
 
 #ifdef MNN_MODULE_ENABLED
 using namespace MNN::Express;
@@ -162,11 +164,9 @@ MNNVar** mnn_module_forward_multi(MNNModule* module,
                                    const MNNVar** inputs, int input_count,
                                    int* output_count) {
     return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
+    if (output_count) *output_count = 0;
 #ifdef MNN_MODULE_ENABLED
-    if (!module || !inputs || input_count <= 0 || !output_count) {
-        if (output_count) *output_count = 0;
-        return nullptr;
-    }
+    if (!module || !inputs || input_count <= 0 || !output_count) return nullptr;
 
     auto* m = reinterpret_cast<Module*>(module);
 
@@ -179,19 +179,38 @@ MNNVar** mnn_module_forward_multi(MNNModule* module,
     }
 
     auto output_vars = m->onForward(input_vars);
-    *output_count = static_cast<int>(output_vars.size());
+    if (output_vars.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
 
-    MNNVar** result = new MNNVar*[output_vars.size()];
+    std::unique_ptr<MNNVar*[]> result(new MNNVar*[output_vars.size()]());
+    std::vector<std::unique_ptr<VARP>> owned_vars;
+    owned_vars.reserve(output_vars.size());
     for (size_t i = 0; i < output_vars.size(); i++) {
-        result[i] = reinterpret_cast<MNNVar*>(new VARP(output_vars[i]));
+        owned_vars.emplace_back(new VARP(output_vars[i]));
+        result[i] = reinterpret_cast<MNNVar*>(owned_vars.back().get());
     }
 
-    return result;
+    for (auto& owned_var : owned_vars) owned_var.release();
+    *output_count = static_cast<int>(output_vars.size());
+    return result.release();
 #else
     if (output_count) *output_count = 0;
     return nullptr;
 #endif
 
+    });
+}
+
+void mnn_var_array_free(MNNVar** vars, int count) {
+    mnn_rs_abi::with_c_boundary_void([&] {
+        if (vars == nullptr) return;
+#ifdef MNN_MODULE_ENABLED
+        for (int i = 0; i < count; ++i) {
+            delete reinterpret_cast<VARP*>(vars[i]);
+        }
+#else
+        (void)count;
+#endif
+        delete[] vars;
     });
 }
 
@@ -212,24 +231,27 @@ int mnn_module_get_parameter_count(const MNNModule* module) {
 
 MNNVar** mnn_module_get_parameters(const MNNModule* module, int* count) {
     return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
+    if (count) *count = 0;
 #ifdef MNN_MODULE_ENABLED
-    if (!module || !count) {
-        if (count) *count = 0;
-        return nullptr;
-    }
+    if (!module || !count) return nullptr;
 
     auto* m = reinterpret_cast<const Module*>(module);
     auto params = m->parameters();
 
-    *count = static_cast<int>(params.size());
     if (params.empty()) return nullptr;
+    if (params.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
 
-    MNNVar** result = new MNNVar*[params.size()];
+    std::unique_ptr<MNNVar*[]> result(new MNNVar*[params.size()]());
+    std::vector<std::unique_ptr<VARP>> owned_vars;
+    owned_vars.reserve(params.size());
     for (size_t i = 0; i < params.size(); i++) {
-        result[i] = reinterpret_cast<MNNVar*>(new VARP(params[i]));
+        owned_vars.emplace_back(new VARP(params[i]));
+        result[i] = reinterpret_cast<MNNVar*>(owned_vars.back().get());
     }
 
-    return result;
+    for (auto& owned_var : owned_vars) owned_var.release();
+    *count = static_cast<int>(params.size());
+    return result.release();
 #else
     if (count) *count = 0;
     return nullptr;
@@ -397,35 +419,32 @@ void mnn_var_info_free(MNNVarInfo* info) {
 
 float* mnn_var_read_float(const MNNVar* var, int* count) {
     return mnn_rs_abi::with_c_boundary<float*>(nullptr, [&]() -> float* {
+    if (count) *count = 0;
 #ifdef MNN_MODULE_ENABLED
-    if (!var || !count) {
-        if (count) *count = 0;
-        return nullptr;
-    }
+    if (!var || !count) return nullptr;
 
     auto* v = reinterpret_cast<const VARP*>(var);
 
     // Get info
     auto info = v->getInfo();
-    if (!info) {
-        *count = 0;
-        return nullptr;
-    }
+    if (!info) return nullptr;
 
-    int element_count = 1;
+    size_t element_count = 1;
     for (int dim : info->dim) {
-        element_count *= dim;
+        if (dim < 0 || (dim != 0 && element_count > static_cast<size_t>(std::numeric_limits<int>::max()) / static_cast<size_t>(dim))) return nullptr;
+        element_count *= static_cast<size_t>(dim);
     }
-    *count = element_count;
+    if (element_count == 0 || element_count > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
 
     // Note: This is a simplified implementation
     // Actual reading requires proper tensor access
-    float* data = new float[element_count];
+    std::unique_ptr<float[]> data(new float[element_count]);
     // In real implementation, we need to get the underlying tensor data
     // This requires MNN's internal API access
-    memset(data, 0, element_count * sizeof(float));
+    memset(data.get(), 0, element_count * sizeof(float));
 
-    return data;
+    *count = static_cast<int>(element_count);
+    return data.release();
 #else
     if (count) *count = 0;
     return nullptr;
@@ -453,25 +472,22 @@ bool mnn_var_write_float(MNNVar* var, const float* data, int count) {
 
 int* mnn_var_get_shape(const MNNVar* var, int* count) {
     return mnn_rs_abi::with_c_boundary<int*>(nullptr, [&]() -> int* {
+    if (count) *count = 0;
 #ifdef MNN_MODULE_ENABLED
-    if (!var || !count) {
-        if (count) *count = 0;
-        return nullptr;
-    }
+    if (!var || !count) return nullptr;
 
     auto* v = reinterpret_cast<const VARP*>(var);
-    if (!v->get()) {
-        *count = 0;
-        return nullptr;
-    }
+    if (!v->get()) return nullptr;
 
-    auto shape = v->getInfo()->dim;
+    auto info = v->getInfo();
+    if (!info || info->dim.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
+    auto shape = info->dim;
+
+    std::unique_ptr<int[]> result(new int[shape.size()]);
+    std::copy(shape.begin(), shape.end(), result.get());
+
     *count = static_cast<int>(shape.size());
-
-    int* result = new int[*count];
-    std::copy(shape.begin(), shape.end(), result);
-
-    return result;
+    return result.release();
 #else
     if (count) *count = 0;
     return nullptr;
@@ -693,23 +709,26 @@ MNNVar* mnn_var_concat(const MNNVar** vars, int var_count, int axis) {
 
 MNNVar** mnn_var_split(const MNNVar* var, int splits, int axis, int* output_count) {
     return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
+    if (output_count) *output_count = 0;
 #ifdef MNN_MODULE_ENABLED
-    if (!var || !output_count || splits <= 0) {
-        if (output_count) *output_count = 0;
-        return nullptr;
-    }
+    if (!var || !output_count || splits <= 0) return nullptr;
 
     auto* v = reinterpret_cast<const VARP*>(var);
 
     auto results = _Split(*v, splits, axis);
-    *output_count = static_cast<int>(results.size());
+    if (results.size() > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
 
-    MNNVar** result = new MNNVar*[results.size()];
+    std::unique_ptr<MNNVar*[]> result(new MNNVar*[results.size()]());
+    std::vector<std::unique_ptr<VARP>> owned_vars;
+    owned_vars.reserve(results.size());
     for (size_t i = 0; i < results.size(); i++) {
-        result[i] = reinterpret_cast<MNNVar*>(new VARP(results[i]));
+        owned_vars.emplace_back(new VARP(results[i]));
+        result[i] = reinterpret_cast<MNNVar*>(owned_vars.back().get());
     }
 
-    return result;
+    for (auto& owned_var : owned_vars) owned_var.release();
+    *output_count = static_cast<int>(results.size());
+    return result.release();
 #else
     if (output_count) *output_count = 0;
     return nullptr;

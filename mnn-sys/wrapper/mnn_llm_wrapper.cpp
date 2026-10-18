@@ -154,7 +154,10 @@ void mnn_llm_destroy(MNNLlm* llm) {
         if (llm == nullptr) {
             return;
         }
-        MNNLlmHandle* handle = reinterpret_cast<MNNLlmHandle*>(llm);
+        // The wrapper and its streaming resources must be released even if
+        // MNN's static destroy routine throws. `Llm::destroy` remains the
+        // only supported way to release the native LLM itself.
+        std::unique_ptr<MNNLlmHandle> handle(reinterpret_cast<MNNLlmHandle*>(llm));
         // Drop streaming resources before releasing the LLM itself.
         handle->os.reset();
         handle->stream.reset();
@@ -163,7 +166,6 @@ void mnn_llm_destroy(MNNLlm* llm) {
             MNN::Transformer::Llm::destroy(handle->llm);
             handle->llm = nullptr;
         }
-        delete handle;
     });
 }
 
