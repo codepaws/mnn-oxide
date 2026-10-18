@@ -4,6 +4,7 @@
  */
 
 #include "mnn_module_wrapper.h"
+#include "mnn_abi_guard.h"
 
 #ifdef MNN_MODULE_ENABLED
 #include <MNN/expr/Module.hpp>
@@ -16,8 +17,11 @@
 #include <vector>
 #include <cstring>
 #include <algorithm>
+#include <string>
 
+#ifdef MNN_MODULE_ENABLED
 using namespace MNN::Express;
+#endif
 
 /* ============================================================================
  * Helper functions
@@ -54,6 +58,7 @@ MNNModule* mnn_module_load_from_file(
     const char* file_path,
     const MNNModuleConfig* config
 ) {
+    return mnn_rs_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
 #ifdef MNN_MODULE_ENABLED
     if (!file_path || !inputs || !outputs || input_count <= 0 || output_count <= 0) {
         return nullptr;
@@ -74,6 +79,8 @@ MNNModule* mnn_module_load_from_file(
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNModule* mnn_module_load_from_buffer(
@@ -82,6 +89,7 @@ MNNModule* mnn_module_load_from_buffer(
     const uint8_t* buffer, size_t buffer_size,
     const MNNModuleConfig* config
 ) {
+    return mnn_rs_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
 #ifdef MNN_MODULE_ENABLED
     if (!buffer || buffer_size == 0 || !inputs || !outputs || input_count <= 0 || output_count <= 0) {
         return nullptr;
@@ -102,9 +110,12 @@ MNNModule* mnn_module_load_from_buffer(
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 void mnn_module_destroy(MNNModule* module) {
+    mnn_rs_abi::with_c_boundary_void([&] {
 #ifdef MNN_MODULE_ENABLED
     if (module) {
         delete reinterpret_cast<Module*>(module);
@@ -112,9 +123,12 @@ void mnn_module_destroy(MNNModule* module) {
 #else
     (void)module;
 #endif
+
+    });
 }
 
 MNNModule* mnn_module_clone(const MNNModule* module, bool share_params) {
+    return mnn_rs_abi::with_c_boundary<MNNModule*>(nullptr, [&]() -> MNNModule* {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return nullptr;
 
@@ -123,9 +137,12 @@ MNNModule* mnn_module_clone(const MNNModule* module, bool share_params) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_module_forward(MNNModule* module, const MNNVar* input) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!module || !input) return nullptr;
 
@@ -137,11 +154,14 @@ MNNVar* mnn_module_forward(MNNModule* module, const MNNVar* input) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar** mnn_module_forward_multi(MNNModule* module,
                                    const MNNVar** inputs, int input_count,
                                    int* output_count) {
+    return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
 #ifdef MNN_MODULE_ENABLED
     if (!module || !inputs || input_count <= 0 || !output_count) {
         if (output_count) *output_count = 0;
@@ -171,9 +191,12 @@ MNNVar** mnn_module_forward_multi(MNNModule* module,
     if (output_count) *output_count = 0;
     return nullptr;
 #endif
+
+    });
 }
 
 int mnn_module_get_parameter_count(const MNNModule* module) {
+    return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return 0;
 
@@ -183,9 +206,12 @@ int mnn_module_get_parameter_count(const MNNModule* module) {
 #else
     return 0;
 #endif
+
+    });
 }
 
 MNNVar** mnn_module_get_parameters(const MNNModule* module, int* count) {
+    return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
 #ifdef MNN_MODULE_ENABLED
     if (!module || !count) {
         if (count) *count = 0;
@@ -208,9 +234,12 @@ MNNVar** mnn_module_get_parameters(const MNNModule* module, int* count) {
     if (count) *count = 0;
     return nullptr;
 #endif
+
+    });
 }
 
 void mnn_module_set_training(MNNModule* module, bool is_training) {
+    mnn_rs_abi::with_c_boundary_void([&] {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return;
 
@@ -220,9 +249,12 @@ void mnn_module_set_training(MNNModule* module, bool is_training) {
     (void)module;
     (void)is_training;
 #endif
+
+    });
 }
 
 bool mnn_module_is_training(const MNNModule* module) {
+    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return false;
 
@@ -231,9 +263,12 @@ bool mnn_module_is_training(const MNNModule* module) {
 #else
     return false;
 #endif
+
+    });
 }
 
 const char* mnn_module_get_name(const MNNModule* module) {
+    return mnn_rs_abi::with_c_boundary<const char*>(nullptr, [&]() -> const char* {
 #ifdef MNN_MODULE_ENABLED
     if (!module) return "";
 
@@ -244,9 +279,12 @@ const char* mnn_module_get_name(const MNNModule* module) {
 #else
     return "";
 #endif
+
+    });
 }
 
 void mnn_module_set_name(MNNModule* module, const char* name) {
+    mnn_rs_abi::with_c_boundary_void([&] {
 #ifdef MNN_MODULE_ENABLED
     if (!module || !name) return;
 
@@ -256,6 +294,8 @@ void mnn_module_set_name(MNNModule* module, const char* name) {
     (void)module;
     (void)name;
 #endif
+
+    });
 }
 
 /* ============================================================================
@@ -265,6 +305,7 @@ void mnn_module_set_name(MNNModule* module, const char* name) {
 MNNVar* mnn_var_create_input(const int* shape, int dim_count,
                               MNNDimensionFormat format,
                               int type_code, int type_bits) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!shape || dim_count <= 0) return nullptr;
 
@@ -276,11 +317,14 @@ MNNVar* mnn_var_create_input(const int* shape, int dim_count,
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_create_constant_float(const float* data,
                                        const int* shape, int dim_count,
                                        MNNDimensionFormat format) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!data || !shape || dim_count <= 0) return nullptr;
 
@@ -292,9 +336,12 @@ MNNVar* mnn_var_create_constant_float(const float* data,
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 void mnn_var_destroy(MNNVar* var) {
+    mnn_rs_abi::with_c_boundary_void([&] {
 #ifdef MNN_MODULE_ENABLED
     if (var) {
         delete reinterpret_cast<VARP*>(var);
@@ -302,9 +349,12 @@ void mnn_var_destroy(MNNVar* var) {
 #else
     (void)var;
 #endif
+
+    });
 }
 
 MNNVarInfo* mnn_var_get_info(const MNNVar* var) {
+    return mnn_rs_abi::with_c_boundary<MNNVarInfo*>(nullptr, [&]() -> MNNVarInfo* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -329,18 +379,24 @@ MNNVarInfo* mnn_var_get_info(const MNNVar* var) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 void mnn_var_info_free(MNNVarInfo* info) {
+    mnn_rs_abi::with_c_boundary_void([&] {
     if (!info) return;
 
     if (info->shape) {
         delete[] info->shape;
     }
     delete info;
+
+    });
 }
 
 float* mnn_var_read_float(const MNNVar* var, int* count) {
+    return mnn_rs_abi::with_c_boundary<float*>(nullptr, [&]() -> float* {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !count) {
         if (count) *count = 0;
@@ -374,9 +430,12 @@ float* mnn_var_read_float(const MNNVar* var, int* count) {
     if (count) *count = 0;
     return nullptr;
 #endif
+
+    });
 }
 
 bool mnn_var_write_float(MNNVar* var, const float* data, int count) {
+    return mnn_rs_abi::with_c_boundary<bool>(false, [&]() -> bool {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !data || count <= 0) return false;
 
@@ -388,9 +447,12 @@ bool mnn_var_write_float(MNNVar* var, const float* data, int count) {
 #else
     return false;
 #endif
+
+    });
 }
 
 int* mnn_var_get_shape(const MNNVar* var, int* count) {
+    return mnn_rs_abi::with_c_boundary<int*>(nullptr, [&]() -> int* {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !count) {
         if (count) *count = 0;
@@ -414,6 +476,8 @@ int* mnn_var_get_shape(const MNNVar* var, int* count) {
     if (count) *count = 0;
     return nullptr;
 #endif
+
+    });
 }
 
 /* ============================================================================
@@ -421,6 +485,7 @@ int* mnn_var_get_shape(const MNNVar* var, int* count) {
  * ============================================================================ */
 
 MNNVar* mnn_var_add(const MNNVar* a, const MNNVar* b) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!a || !b) return nullptr;
 
@@ -432,9 +497,12 @@ MNNVar* mnn_var_add(const MNNVar* a, const MNNVar* b) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_sub(const MNNVar* a, const MNNVar* b) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!a || !b) return nullptr;
 
@@ -446,9 +514,12 @@ MNNVar* mnn_var_sub(const MNNVar* a, const MNNVar* b) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_mul(const MNNVar* a, const MNNVar* b) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!a || !b) return nullptr;
 
@@ -460,9 +531,12 @@ MNNVar* mnn_var_mul(const MNNVar* a, const MNNVar* b) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_div(const MNNVar* a, const MNNVar* b) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!a || !b) return nullptr;
 
@@ -474,6 +548,8 @@ MNNVar* mnn_var_div(const MNNVar* a, const MNNVar* b) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 /* ============================================================================
@@ -481,6 +557,7 @@ MNNVar* mnn_var_div(const MNNVar* a, const MNNVar* b) {
  * ============================================================================ */
 
 MNNVar* mnn_var_sum(const MNNVar* var, const int* axes, int axis_count, bool keep_dims) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -496,9 +573,12 @@ MNNVar* mnn_var_sum(const MNNVar* var, const int* axes, int axis_count, bool kee
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_mean(const MNNVar* var, const int* axes, int axis_count, bool keep_dims) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -511,9 +591,12 @@ MNNVar* mnn_var_mean(const MNNVar* var, const int* axes, int axis_count, bool ke
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_max(const MNNVar* var, const int* axes, int axis_count, bool keep_dims) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -526,9 +609,12 @@ MNNVar* mnn_var_max(const MNNVar* var, const int* axes, int axis_count, bool kee
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_min(const MNNVar* var, const int* axes, int axis_count, bool keep_dims) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var) return nullptr;
 
@@ -541,6 +627,8 @@ MNNVar* mnn_var_min(const MNNVar* var, const int* axes, int axis_count, bool kee
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 /* ============================================================================
@@ -548,6 +636,7 @@ MNNVar* mnn_var_min(const MNNVar* var, const int* axes, int axis_count, bool kee
  * ============================================================================ */
 
 MNNVar* mnn_var_reshape(const MNNVar* var, const int* shape, int dim_count) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !shape || dim_count <= 0) return nullptr;
 
@@ -559,9 +648,12 @@ MNNVar* mnn_var_reshape(const MNNVar* var, const int* shape, int dim_count) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_transpose(const MNNVar* var, const int* perm, int dim_count) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !perm || dim_count <= 0) return nullptr;
 
@@ -573,9 +665,12 @@ MNNVar* mnn_var_transpose(const MNNVar* var, const int* perm, int dim_count) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar* mnn_var_concat(const MNNVar** vars, int var_count, int axis) {
+    return mnn_rs_abi::with_c_boundary<MNNVar*>(nullptr, [&]() -> MNNVar* {
 #ifdef MNN_MODULE_ENABLED
     if (!vars || var_count <= 0) return nullptr;
 
@@ -592,9 +687,12 @@ MNNVar* mnn_var_concat(const MNNVar** vars, int var_count, int axis) {
 #else
     return nullptr;
 #endif
+
+    });
 }
 
 MNNVar** mnn_var_split(const MNNVar* var, int splits, int axis, int* output_count) {
+    return mnn_rs_abi::with_c_boundary<MNNVar**>(nullptr, [&]() -> MNNVar** {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !output_count || splits <= 0) {
         if (output_count) *output_count = 0;
@@ -616,4 +714,6 @@ MNNVar** mnn_var_split(const MNNVar* var, int splits, int axis, int* output_coun
     if (output_count) *output_count = 0;
     return nullptr;
 #endif
+
+    });
 }
