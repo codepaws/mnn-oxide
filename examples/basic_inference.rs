@@ -54,13 +54,13 @@ fn main() -> Result<(), MnnError> {
     println!("  Input shape: {:?}", input_shape);
     println!("  Input dtype: {}", input.dtype());
     println!("  Input format: {:?}", input.format());
-    println!("  Input element count: {}", input.element_count());
+    println!("  Input element count: {}", input.element_count()?);
 
     // ===== Step 4: Prepare Input Data =====
     println!("\n[Step 4] Preparing input data");
 
     // Calculate input size
-    let input_size = input.element_count() as usize;
+    let input_size = input.element_count()?;
     println!("  Input size: {} elements", input_size);
 
     // Create input data (all zeros for simplicity, or random values)
@@ -90,7 +90,7 @@ fn main() -> Result<(), MnnError> {
     println!("  Output shape: {:?}", output_shape);
     println!("  Output dtype: {}", output.dtype());
     println!("  Output format: {:?}", output.format());
-    println!("  Output element count: {}", output.element_count());
+    println!("  Output element count: {}", output.element_count()?);
 
     // ===== Step 7: Read Output Data =====
     println!("\n[Step 7] Reading output data");

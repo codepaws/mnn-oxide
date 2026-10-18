@@ -2,16 +2,20 @@
 
 [![Crates.io](https://img.shields.io/crates/v/mnn-rs.svg)](https://crates.io/crates/mnn-rs)
 [![Documentation](https://docs.rs/mnn-rs/badge.svg)](https://docs.rs/mnn-rs)
-[![License](https://img.shields.io/crates/l/mnn-rs.svg)](https://github.com/wapznw/mnn-rs#license)
+[![License](https://img.shields.io/crates/l/mnn-rs.svg)](https://github.com/codepaws/mnn-rs#license)
 
 Rust bindings for [MNN](https://github.com/alibaba/MNN) (Mobile Neural Network), Alibaba's efficient and lightweight deep learning inference framework.
+
+## Project lineage
+
+This is the maintained [CodePaws fork](https://github.com/codepaws/mnn-rs) of [wapznw/mnn-rs](https://github.com/wapznw/mnn-rs). The original wrapper project is credited as the source of this fork. The wrapped inference engine is [Alibaba MNN](https://github.com/alibaba/MNN).
 
 ## Features
 
 - **Safe Rust API**: All MNN operations are wrapped in safe Rust types with proper error handling
-- **Cross-platform**: Supports Windows, Linux, macOS, Android, and iOS
-- **Prebuilt Binaries**: Automatically download prebuilt binaries - no CMake or C++ compiler required!
-- **Multiple Backends**: CPU, CUDA, OpenCL, Vulkan, and Metal
+- **Cross-platform codebase**: Native runtime qualification remains pending for each target and backend
+- **Explicit native dependency**: Cargo never downloads, clones, or builds the MNN engine in its default configuration.
+- **Backend options**: CPU, CUDA, OpenCL, Vulkan, and Metal when present in the selected MNN library
 - **Static/Dynamic Linking**: Choose between static or dynamic linking
 - **Async Support**: Optional async API with Tokio integration
 - **LLM Support**: Run large language models (Qwen, Llama, ChatGLM, etc.) locally
@@ -19,63 +23,16 @@ Rust bindings for [MNN](https://github.com/alibaba/MNN) (Mobile Neural Network),
 
 ## Quick Start
 
-### Default Build (Recommended)
+### Configure an installed MNN
 
-By default, the crate will automatically download prebuilt MNN binaries from GitHub Releases:
-
-```bash
-cargo build
-```
-
-**No prerequisites required!** The prebuilt binaries are available for:
-- Windows (x86_64 MSVC, x86 MSVC)
-- Linux (x86_64, aarch64)
-- macOS (x86_64 Intel, aarch64 Apple Silicon)
-- Android (arm64-v8a, armeabi-v7a)
-- iOS (arm64 device, arm64 simulator)
-
-### Custom Prebuilt URL
-
-You can specify a custom download URL for prebuilt binaries:
-
-```bash
-export MNN_PREBUILT_URL=https://your-server.com/mnn-x86_64-pc-windows-msvc.tar.gz
-cargo build
-```
-
-### Building from Source
-
-If you need to build MNN locally (e.g., for custom build options):
-
-```bash
-cargo build --features build-from-source --no-default-features
-```
-
-By default the default branch of the upstream MNN repository is cloned. To pin
-a specific MNN tag, branch, or commit (recommended for reproducible builds),
-set `MNN_SOURCE_VERSION`:
-
-```bash
-MNN_SOURCE_VERSION=3.6.1 cargo build --features build-from-source --no-default-features
-```
-
-The prebuilt binaries are built from MNN `3.6.1`.
-
-This requires:
-- Git (for cloning MNN source)
-- CMake (for building MNN)
-- C++ compiler (MSVC on Windows, GCC/Clang on Linux/macOS)
-
-### Using Pre-built MNN
-
-If you have a pre-built MNN library, you can use it directly:
+Supply matching headers and libraries explicitly. A clean `cargo build` without these paths fails with an actionable configuration error; it does not acquire the engine.
 
 ```bash
 # Set MNN library paths
 export MNN_LIB_DIR=/path/to/mnn/lib
 export MNN_INCLUDE_DIR=/path/to/mnn/include
 
-# Build without auto-download (static MNN)
+# Link to the selected MNN installation
 cargo build --no-default-features --features cpu,static
 ```
 
@@ -88,10 +45,11 @@ To link against a system dynamic MNN (e.g. a Windows Dynamic/MD package):
 set MNN_LIB_DIR=C:\path\to\mnn\lib
 set MNN_INCLUDE_DIR=C:\path\to\mnn\include
 
-# Dynamic linking - note: --no-default-features is required to avoid the
-# default 'static' feature
+# Dynamic linking
 cargo build --no-default-features --features cpu,dynamic,system-mnn
 ```
+
+The `use-prebuilt` feature currently returns an explicit unsupported-mode error. A future prebuilt mode must pin its artifact and verify its checksum. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Static and dynamic linking are selected explicitly with `static` or `dynamic`.
 
 On MSVC, the C++ wrapper is compiled with the CRT matching the link mode:
 `/MT` for static MNN, `/MD` for dynamic MNN. If your MNN library was built
@@ -116,7 +74,7 @@ fn main() -> Result<(), MnnError> {
 
     // Get input tensor and write data
     let input = session.get_input(None)?;
-    let input_data: Vec<f32> = vec![0.0; input.element_count() as usize];
+    let input_data: Vec<f32> = vec![0.0; input.element_count()?];
     input.write(&input_data)?;
 
     // Run inference
@@ -217,8 +175,8 @@ fn main() -> Result<(), mnn_rs::MnnError> {
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `use-prebuilt` | ✓ | Download prebuilt MNN binaries from GitHub Releases |
-| `build-from-source` | | Build MNN from source (requires CMake, C++ compiler) |
+| `use-prebuilt` | | Unsupported until pinned, checksum-verified artifacts are implemented |
+| `build-from-source` | | Build MNN from an existing checkout pinned to a full commit SHA |
 | `system-mnn` | | Use system-installed MNN library |
 
 ### Async Support
@@ -233,14 +191,13 @@ fn main() -> Result<(), mnn_rs::MnnError> {
 |---------|-------------|
 | `llm` | Enable MNN LLM engine bindings (`Llm`, `Embedding`) |
 
-The prebuilt MNN binaries ship the LLM engine, so `llm` works with the default
-prebuilt download:
+The explicitly selected MNN library must include the LLM engine for `llm` to work:
 
 ```bash
 cargo build --features llm
 ```
 
-When building MNN from source, the `llm` feature automatically adds
+When building MNN from source, the `llm` feature adds
 `MNN_BUILD_LLM=ON` (which turns on `MNN_LOW_MEMORY` and
 `MNN_SUPPORT_TRANSFORMER_FUSE`), disables the MNN demo executables, and turns
 off `LLM_SUPPORT_HTTP_RESOURCE` (the bundled cpp-httplib does not support
@@ -284,7 +241,7 @@ cargo run --example basic_inference -- /path/to/model.mnn
 
 ## Cross-Compilation
 
-Prebuilt binaries are available for most cross-compilation targets. If prebuilt binaries are not available for your target, enable `build-from-source`:
+Configure a target-compatible MNN installation explicitly. Source builds use an existing checkout at an exact commit SHA:
 
 ```bash
 cargo build --target aarch64-linux-android --features build-from-source --no-default-features
@@ -296,22 +253,21 @@ cargo build --target aarch64-linux-android --features build-from-source --no-def
 # Install Android target
 rustup target add aarch64-linux-android
 
-# Build for Android (uses prebuilt binaries by default)
-cargo build --target aarch64-linux-android
+# Build for Android with explicit MNN paths
+cargo build --target aarch64-linux-android --no-default-features --features cpu,static
 
 # Or build from source (requires NDK and Ninja)
 export ANDROID_NDK_HOME=/path/to/android-ndk
 cargo build --target aarch64-linux-android --features build-from-source --no-default-features
 ```
 
-**Supported Android targets:**
+**Rust Android target identifiers (runtime qualification pending):**
 - `aarch64-linux-android` (arm64-v8a)
 - `armv7-linux-androideabi` (armeabi-v7a)
 - `x86_64-linux-android`
 - `i686-linux-android`
 
-Prebuilt binaries are shipped for `aarch64` (arm64-v8a) and `armv7`
-(armeabi-v7a) only; the `x86_64`/`i686` targets must use `build-from-source`.
+No Android prebuilt acquisition is implemented. Supply explicit target-compatible MNN library and header paths.
 
 **Building from source requirements:**
 - Android NDK (set `ANDROID_NDK_HOME` or `NDK_HOME` environment variable)
@@ -324,24 +280,22 @@ Prebuilt binaries are shipped for `aarch64` (arm64-v8a) and `armv7`
 rustup target add aarch64-apple-ios
 rustup target add aarch64-apple-ios-sim
 
-# Build for iOS device (uses prebuilt binaries by default)
-cargo build --target aarch64-apple-ios
+# Build for iOS device with explicit MNN paths
+cargo build --target aarch64-apple-ios --no-default-features --features cpu,static
 
 # Build for iOS simulator (Apple Silicon Macs)
 cargo build --target aarch64-apple-ios-sim
 
-# Build for iOS simulator (Intel Macs; no prebuilt - requires build-from-source)
-cargo build --target x86_64-apple-ios --features build-from-source --no-default-features
+# Build for iOS simulator (Intel Macs)
+cargo build --target x86_64-apple-ios --no-default-features --features cpu,static
 ```
 
-**Supported iOS targets:**
+**Rust iOS target identifiers (runtime qualification pending):**
 - `aarch64-apple-ios` (iOS device)
 - `aarch64-apple-ios-sim` (iOS simulator on Apple Silicon)
 - `x86_64-apple-ios` (iOS simulator on Intel Macs)
 
-Prebuilt binaries are shipped for `aarch64-apple-ios` and
-`aarch64-apple-ios-sim`; `x86_64-apple-ios` (Intel Mac simulators) must use
-`build-from-source`.
+No iOS prebuilt acquisition is implemented. Supply explicit target-compatible MNN library and header paths.
 
 ### Linux
 
@@ -370,18 +324,17 @@ cargo build --target aarch64-apple-darwin
 # MSVC (recommended)
 cargo build --target x86_64-pc-windows-msvc
 
-# MinGW (no prebuilt for GNU targets - requires build-from-source)
+# MinGW
 rustup target add x86_64-pc-windows-gnu
-cargo build --target x86_64-pc-windows-gnu --features build-from-source --no-default-features
+cargo build --target x86_64-pc-windows-gnu --no-default-features --features cpu,static
 ```
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `MNN_PREBUILT_URL` | Custom URL for prebuilt MNN binaries |
-| `MNN_SOURCE_PATH` | Path to MNN source directory (for build-from-source) |
-| `MNN_SOURCE_VERSION` | Pin MNN source to a tag/branch/commit (e.g. `3.6.1`) when cloning from GitHub |
+| `MNN_SOURCE_PATH` | Existing MNN source checkout for explicit source builds |
+| `MNN_SOURCE_VERSION` | Full 40-character commit SHA matching `MNN_SOURCE_PATH` |
 | `MNN_LIB_DIR` | Path to pre-built MNN library |
 | `MNN_INCLUDE_DIR` | Path to MNN headers |
 | `MNN_DEBUG_BUILD` | Print debug information during build |
@@ -396,8 +349,7 @@ See [https://docs.rs/mnn-rs](https://docs.rs/mnn-rs) for full API documentation.
 
 ## MNN Version
 
-The prebuilt binaries are built from MNN `3.6.1`. When building from source,
-pin the MNN version with `MNN_SOURCE_VERSION` for reproducible builds.
+No prebuilt MNN artifact is currently selected or qualified by this crate. Source builds are pinned to the exact commit SHA in `MNN_SOURCE_VERSION`.
 
 ## License
 

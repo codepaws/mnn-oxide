@@ -3,12 +3,14 @@
 //! This module provides safe wrappers around MNN tensor operations,
 //! including creating, reading, and writing tensor data.
 
-use crate::backend::{DataType, BackendType};
+use crate::backend::{BackendType, DataType};
 use crate::config::DataFormat;
 use crate::error::{MnnError, MnnResult};
+use crate::session::SessionHandle;
 use mnn_rs_sys::MNNTensor;
 use std::ffi::c_void;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// Information about a tensor's shape and type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,15 +29,33 @@ pub struct TensorInfo {
 }
 
 impl TensorInfo {
-    /// Get the total number of elements in the tensor.
-    pub fn element_count(&self) -> i32 {
-        self.shape.iter().product()
+    /// Calculate element count while rejecting negative dimensions and overflow.
+    pub fn element_count(&self) -> MnnResult<usize> {
+        checked_element_count(&self.shape)
     }
 
-    /// Get the size in bytes of the tensor data.
-    pub fn byte_size(&self) -> usize {
-        self.element_count() as usize * self.dtype.size()
+    /// Calculate byte size while rejecting invalid dimensions and overflow.
+    pub fn byte_size(&self) -> MnnResult<usize> {
+        self.element_count()?
+            .checked_mul(self.dtype.size())
+            .ok_or_else(|| MnnError::tensor_error("Tensor byte size overflow"))
     }
+}
+
+fn checked_element_count(shape: &[i32]) -> MnnResult<usize> {
+    if shape.is_empty() {
+        return Err(MnnError::tensor_error("Tensor shape is empty"));
+    }
+    shape.iter().try_fold(1usize, |count, &dim| {
+        if dim < 0 {
+            return Err(MnnError::tensor_error(
+                "Tensor shape contains a negative dimension",
+            ));
+        }
+        count
+            .checked_mul(dim as usize)
+            .ok_or_else(|| MnnError::tensor_error("Tensor element count overflow"))
+    })
 }
 
 /// A multi-dimensional array for neural network operations.
@@ -46,6 +66,9 @@ pub struct Tensor {
     inner: *mut MNNTensor,
     /// Name of the tensor (if any)
     name: Option<String>,
+    /// Keeps session-owned tensor memory and its interpreter alive.
+    _session_owner: Option<Arc<SessionHandle>>,
+    destroy: Option<unsafe extern "C" fn(*mut MNNTensor)>,
 }
 
 // Safety: Tensor operations are thread-safe through MNN's internal synchronization
@@ -57,8 +80,17 @@ impl Tensor {
     ///
     /// # Safety
     /// The pointer must be valid and remain valid for the lifetime of this tensor.
-    pub(crate) unsafe fn from_ptr_with_name(ptr: *mut MNNTensor, name: Option<String>) -> Self {
-        Self { inner: ptr, name }
+    pub(crate) unsafe fn from_session_ptr(
+        ptr: *mut MNNTensor,
+        name: Option<String>,
+        owner: Arc<SessionHandle>,
+    ) -> Self {
+        Self {
+            inner: ptr,
+            name,
+            _session_owner: Some(owner),
+            destroy: None,
+        }
     }
 
     /// Create a tensor wrapper around an existing MNN tensor pointer (public version).
@@ -66,7 +98,27 @@ impl Tensor {
     /// # Safety
     /// The pointer must be valid and remain valid for the lifetime of this tensor.
     pub unsafe fn from_ptr(ptr: *mut MNNTensor, name: Option<String>) -> Self {
-        Self { inner: ptr, name }
+        Self {
+            inner: ptr,
+            name,
+            _session_owner: None,
+            destroy: None,
+        }
+    }
+
+    /// Wrap a native tensor allocated by a constructor that transfers ownership.
+    pub(crate) unsafe fn from_owned_ptr(
+        ptr: *mut MNNTensor,
+        name: Option<String>,
+        destroy: unsafe extern "C" fn(*mut MNNTensor),
+        session_owner: Option<Arc<SessionHandle>>,
+    ) -> Self {
+        Self {
+            inner: ptr,
+            name,
+            _session_owner: session_owner,
+            destroy: Some(destroy),
+        }
     }
 
     /// Get the mutable raw pointer to the underlying MNN tensor.
@@ -124,6 +176,20 @@ impl Tensor {
         }
     }
 
+    fn checked_dtype(&self) -> MnnResult<DataType> {
+        let code = unsafe { mnn_rs_sys::mnn_tensor_get_type_code(self.inner) };
+        DataType::try_from_type_code(code).ok_or_else(|| {
+            MnnError::tensor_error(format!("Unsupported native tensor type code: {code}"))
+        })
+    }
+
+    fn checked_native_byte_size(&self) -> MnnResult<usize> {
+        let size = unsafe { mnn_rs_sys::mnn_tensor_get_size(self.inner) };
+        usize::try_from(size).map_err(|_| {
+            MnnError::tensor_error(format!("Native tensor reported invalid byte size: {size}"))
+        })
+    }
+
     /// Get the data format of the tensor.
     pub fn format(&self) -> DataFormat {
         unsafe {
@@ -138,13 +204,18 @@ impl Tensor {
     }
 
     /// Get the total number of elements in the tensor.
-    pub fn element_count(&self) -> i32 {
-        unsafe { mnn_rs_sys::mnn_tensor_get_element_count(self.inner) }
+    pub fn element_count(&self) -> MnnResult<usize> {
+        let count = unsafe { mnn_rs_sys::mnn_tensor_get_element_count(self.inner) };
+        usize::try_from(count).map_err(|_| {
+            MnnError::tensor_error(format!(
+                "Native tensor reported invalid element count: {count}"
+            ))
+        })
     }
 
     /// Get the size of the tensor data in bytes.
-    pub fn byte_size(&self) -> usize {
-        unsafe { mnn_rs_sys::mnn_tensor_get_size(self.inner) as usize }
+    pub fn byte_size(&self) -> MnnResult<usize> {
+        self.checked_native_byte_size()
     }
 
     /// Get the name of the tensor.
@@ -160,11 +231,17 @@ impl Tensor {
     /// # Errors
     /// Returns an error if the data size doesn't match.
     pub fn write<T: TensorData>(&self, data: &[T]) -> MnnResult<()> {
+        let byte_count = validate_transfer::<T>(
+            self.checked_dtype()?,
+            self.shape().as_slice(),
+            self.checked_native_byte_size()?,
+            data.len(),
+        )?;
         if data.is_empty() {
             return Err(MnnError::EmptyData);
         }
 
-        let expected_count = self.element_count() as usize;
+        let expected_count = checked_element_count(&self.shape())?;
         if data.len() != expected_count {
             return Err(MnnError::shape_mismatch(
                 &[expected_count as i32],
@@ -178,11 +255,7 @@ impl Tensor {
         }
 
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr() as *const c_void,
-                host_data,
-                data.len() * std::mem::size_of::<T>(),
-            );
+            std::ptr::copy_nonoverlapping(data.as_ptr() as *const c_void, host_data, byte_count);
         }
 
         Ok(())
@@ -193,8 +266,18 @@ impl Tensor {
     /// # Returns
     /// A vector containing the tensor data.
     pub fn read<T: TensorData>(&self) -> MnnResult<Vec<T>> {
-        let count = self.element_count() as usize;
-        let mut data = vec![T::default(); count];
+        let count = checked_element_count(&self.shape())?;
+        let byte_count = validate_transfer::<T>(
+            self.checked_dtype()?,
+            self.shape().as_slice(),
+            self.checked_native_byte_size()?,
+            count,
+        )?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(count).map_err(|error| {
+            MnnError::tensor_error(format!("Unable to allocate tensor output: {error}"))
+        })?;
+        data.resize(count, T::default());
 
         let host_data = unsafe { mnn_rs_sys::mnn_tensor_get_host_data(self.inner) };
         if host_data.is_null() {
@@ -202,11 +285,7 @@ impl Tensor {
         }
 
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                host_data,
-                data.as_mut_ptr() as *mut c_void,
-                count * std::mem::size_of::<T>(),
-            );
+            std::ptr::copy_nonoverlapping(host_data, data.as_mut_ptr() as *mut c_void, byte_count);
         }
 
         Ok(data)
@@ -218,7 +297,14 @@ impl Tensor {
     /// The returned slice is valid only as long as no other operations
     /// are performed on the tensor.
     pub unsafe fn as_slice_mut<T: TensorData>(&mut self) -> MnnResult<&mut [T]> {
-        let count = self.element_count() as usize;
+        let shape = self.shape();
+        let count = checked_element_count(&shape)?;
+        validate_transfer::<T>(
+            self.checked_dtype()?,
+            &shape,
+            self.checked_native_byte_size()?,
+            count,
+        )?;
         let ptr = unsafe { mnn_rs_sys::mnn_tensor_get_host_data(self.inner) };
 
         if ptr.is_null() {
@@ -234,7 +320,14 @@ impl Tensor {
     /// The returned slice is valid only as long as no other operations
     /// are performed on the tensor.
     pub unsafe fn as_slice<T: TensorData>(&self) -> MnnResult<&[T]> {
-        let count = self.element_count() as usize;
+        let shape = self.shape();
+        let count = checked_element_count(&shape)?;
+        validate_transfer::<T>(
+            self.checked_dtype()?,
+            &shape,
+            self.checked_native_byte_size()?,
+            count,
+        )?;
         let ptr = unsafe { mnn_rs_sys::mnn_tensor_get_host_data(self.inner) };
 
         if ptr.is_null() {
@@ -266,9 +359,8 @@ impl Tensor {
     /// # Returns
     /// Ok(()) on success, or an error on failure.
     pub fn copy_from_host(&mut self, host_tensor: &Tensor) -> MnnResult<()> {
-        let result = unsafe {
-            mnn_rs_sys::mnn_tensor_copy_from_host(self.inner, host_tensor.inner)
-        };
+        let result =
+            unsafe { mnn_rs_sys::mnn_tensor_copy_from_host(self.inner, host_tensor.inner) };
 
         if result != mnn_rs_sys::MNN_ERROR_NONE as i32 {
             return Err(MnnError::internal("Failed to copy from host tensor"));
@@ -285,9 +377,7 @@ impl Tensor {
     /// # Returns
     /// Ok(()) on success, or an error on failure.
     pub fn copy_to_host(&self, host_tensor: &mut Tensor) -> MnnResult<()> {
-        let result = unsafe {
-            mnn_rs_sys::mnn_tensor_copy_to_host(host_tensor.inner, self.inner)
-        };
+        let result = unsafe { mnn_rs_sys::mnn_tensor_copy_to_host(host_tensor.inner, self.inner) };
 
         if result != mnn_rs_sys::MNN_ERROR_NONE as i32 {
             return Err(MnnError::internal("Failed to copy to host tensor"));
@@ -305,11 +395,7 @@ impl Tensor {
     ///
     /// # Returns
     /// A new device tensor on success, or an error on failure.
-    pub fn create_device(
-        shape: &[i32],
-        format: DataFormat,
-        dtype: DataType,
-    ) -> MnnResult<Tensor> {
+    pub fn create_device(shape: &[i32], format: DataFormat, dtype: DataType) -> MnnResult<Tensor> {
         if shape.is_empty() {
             return Err(MnnError::internal("Shape cannot be empty"));
         }
@@ -330,7 +416,7 @@ impl Tensor {
             return Err(MnnError::internal("Failed to create device tensor"));
         }
 
-        Ok(unsafe { Tensor::from_ptr(inner, None) })
+        Ok(unsafe { Tensor::from_owned_ptr(inner, None, mnn_rs_sys::mnn_tensor_destroy, None) })
     }
 
     /// Clone this tensor.
@@ -341,15 +427,21 @@ impl Tensor {
     /// # Returns
     /// A cloned tensor on success, or an error on failure.
     pub fn clone(&self, deep_copy: bool) -> MnnResult<Tensor> {
-        let inner = unsafe {
-            mnn_rs_sys::mnn_tensor_clone(self.inner, if deep_copy { 1 } else { 0 })
-        };
+        let inner =
+            unsafe { mnn_rs_sys::mnn_tensor_clone(self.inner, if deep_copy { 1 } else { 0 }) };
 
         if inner.is_null() {
             return Err(MnnError::internal("Failed to clone tensor"));
         }
 
-        Ok(unsafe { Tensor::from_ptr(inner, None) })
+        Ok(unsafe {
+            Tensor::from_owned_ptr(
+                inner,
+                None,
+                mnn_rs_sys::mnn_tensor_destroy,
+                self._session_owner.clone(),
+            )
+        })
     }
 
     /// Get the device ID for this tensor (for GPU tensors).
@@ -368,6 +460,48 @@ impl Tensor {
         let backend_code = unsafe { mnn_rs_sys::mnn_tensor_get_backend(self.inner) };
         BackendType::from_mnn_type(backend_code)
     }
+}
+
+impl Drop for Tensor {
+    fn drop(&mut self) {
+        if let Some(destroy) = self.destroy {
+            if !self.inner.is_null() {
+                unsafe { destroy(self.inner) };
+            }
+        }
+    }
+}
+
+fn validate_transfer<T: TensorData>(
+    dtype: DataType,
+    shape: &[i32],
+    native_bytes: usize,
+    count: usize,
+) -> MnnResult<usize> {
+    if T::dtype() != dtype {
+        return Err(MnnError::TypeMismatch {
+            expected: dtype.name().into(),
+            actual: T::dtype().name().into(),
+        });
+    }
+    let elements = checked_element_count(shape)?;
+    if count != elements {
+        return Err(MnnError::tensor_error(format!(
+            "Tensor element count mismatch: expected {elements}, got {count}"
+        )));
+    }
+    let bytes = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| MnnError::tensor_error("Tensor transfer byte size overflow"))?;
+    let expected_bytes = elements
+        .checked_mul(dtype.size())
+        .ok_or_else(|| MnnError::tensor_error("Tensor byte size overflow"))?;
+    if bytes != expected_bytes || native_bytes != expected_bytes {
+        return Err(MnnError::tensor_error(format!(
+            "Tensor byte size mismatch: expected {expected_bytes}, native reports {native_bytes}"
+        )));
+    }
+    Ok(expected_bytes)
 }
 
 impl std::fmt::Debug for Tensor {
@@ -506,7 +640,48 @@ mod tests {
             format: DataFormat::Nchw,
         };
 
-        assert_eq!(info.element_count(), 1 * 3 * 224 * 224);
-        assert_eq!(info.byte_size(), 1 * 3 * 224 * 224 * 4);
+        assert_eq!(info.element_count().unwrap(), 1 * 3 * 224 * 224);
+        assert_eq!(info.byte_size().unwrap(), 1 * 3 * 224 * 224 * 4);
+    }
+
+    #[test]
+    fn checked_tensor_sizes_reject_invalid_dimensions_and_overflow() {
+        let mut info = TensorInfo {
+            name: String::new(),
+            shape: vec![2, 3],
+            dtype: DataType::Float32,
+            format: DataFormat::Nchw,
+        };
+        assert_eq!(info.element_count().unwrap(), 6);
+        assert_eq!(info.byte_size().unwrap(), 24);
+        info.shape = vec![2, -1];
+        assert!(info.element_count().is_err());
+        info.shape = vec![i32::MAX, i32::MAX, i32::MAX];
+        assert!(info.byte_size().is_err());
+    }
+
+    #[test]
+    fn owned_tensor_destroys_native_object_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DESTROYED: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn count_destroy(_: *mut MNNTensor) {
+            DESTROYED.fetch_add(1, Ordering::SeqCst);
+        }
+        DESTROYED.store(0, Ordering::SeqCst);
+        {
+            let _owned = unsafe {
+                Tensor::from_owned_ptr(1usize as *mut MNNTensor, None, count_destroy, None)
+            };
+        }
+        assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);
+        let _borrowed = unsafe { Tensor::from_ptr(std::ptr::null_mut(), None) };
+        assert_eq!(DESTROYED.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn transfer_validation_checks_dtype_and_exact_bytes() {
+        assert!(validate_transfer::<f32>(DataType::Int32, &[2], 8, 2).is_err());
+        assert!(validate_transfer::<f32>(DataType::Float32, &[2], 4, 2).is_err());
+        assert!(validate_transfer::<f32>(DataType::Float32, &[2], 8, 2).is_ok());
     }
 }

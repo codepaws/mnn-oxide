@@ -39,7 +39,7 @@ fn main() -> Result<(), mnn_rs::MnnError> {
     let shape = img.shape();
     println!("  Shape: {:?}", shape);
     println!("  Dtype: {}", img.dtype());
-    println!("  Element count: {}", img.element_count());
+    println!("  Element count: {}", img.element_count()?);
 
     // Try reading as u8 (imread returns uint8 tensor)
     let data: Vec<u8> = img.read()?;

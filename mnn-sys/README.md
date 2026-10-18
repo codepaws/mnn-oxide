@@ -9,7 +9,7 @@ This crate provides low-level unsafe bindings to MNN's C API. For a safe, idioma
 
 ## Features
 
-- **Build from Source**: Automatically clone and compile MNN from GitHub
+- **Explicit native dependency**: Cargo does not download or clone the MNN engine
 - **Multiple Backends**: CPU, CUDA, OpenCL, Vulkan, Metal
 - **Static/Dynamic Linking**: Flexible linking options
 - **Cross-Platform**: Windows, Linux, macOS, Android, iOS
@@ -17,32 +17,18 @@ This crate provides low-level unsafe bindings to MNN's C API. For a safe, idioma
 
 ## Usage
 
-### Default Build (Recommended)
-
-By default, the crate downloads prebuilt MNN binaries from GitHub Releases:
-
-```bash
-cargo build
-```
-
-To build MNN from source instead (requires Git, CMake, and a C++ compiler):
-
-```bash
-cargo build --no-default-features --features build-from-source
-```
-
-### Using Pre-built MNN
-
-If you have a pre-built MNN library:
+### Using an explicitly selected MNN installation
 
 ```bash
 # Set environment variables
 export MNN_LIB_DIR=/path/to/mnn/lib
 export MNN_INCLUDE_DIR=/path/to/mnn/include
 
-# Build without auto-build
+# Select static or dynamic linking explicitly
 cargo build --no-default-features --features cpu,static
 ```
+
+Source builds require `build-from-source`, `MNN_SOURCE_PATH` pointing to an existing clean checkout, and `MNN_SOURCE_VERSION` set to its full 40-character commit SHA. Modified and untracked files are rejected; Cargo will not clone the engine. `use-prebuilt` currently fails explicitly because checksum-verified artifact acquisition is not implemented.
 
 ## Features
 
@@ -50,8 +36,8 @@ cargo build --no-default-features --features cpu,static
 |---------|-------------|
 | `static` (default) | Static link MNN |
 | `dynamic` | Dynamic link MNN. Requires `--no-default-features` (conflicts with the default `static`) |
-| `use-prebuilt` (default) | Download prebuilt MNN binaries from GitHub Releases |
-| `build-from-source` | Clone and build MNN from GitHub |
+| `use-prebuilt` | Unsupported until checksum-verified artifact acquisition is implemented |
+| `build-from-source` | Build from an existing checkout pinned to a full commit SHA |
 | `llm` | Enable MNN LLM engine bindings |
 | `cuda` | Enable CUDA backend |
 | `opencl` | Enable OpenCL backend |

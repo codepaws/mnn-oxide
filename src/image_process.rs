@@ -517,7 +517,7 @@ impl ImageProcess {
             return Err(MnnError::internal("Failed to create image tensor"));
         }
 
-        Ok(unsafe { Tensor::from_ptr(inner, None) })
+        Ok(unsafe { Tensor::from_owned_ptr(inner, None, mnn_image_tensor_destroy, None) })
     }
 
     /// Get the raw pointer to the underlying MNN ImageProcess.
@@ -582,7 +582,7 @@ pub fn imread<P: AsRef<std::path::Path>>(path: P, flags: ImreadFlags) -> MnnResu
         return Err(MnnError::internal("Failed to read image (MNN imread returned null)"));
     }
 
-    Ok(unsafe { Tensor::from_ptr(inner, None) })
+    Ok(unsafe { Tensor::from_owned_ptr(inner, None, mnn_tensor_destroy, None) })
 }
 
 /// Write an image to file using MNN CV.
@@ -654,7 +654,7 @@ pub fn resize(src: &Tensor, dst_width: i32, dst_height: i32, filter: ResizeFilte
 
     // Note: mnn_resize returns a tensor from VARP's getTensor()
     // We need to clone it to get an owned tensor
-    Ok(unsafe { Tensor::from_ptr(inner, None) })
+    Ok(unsafe { Tensor::from_owned_ptr(inner, None, mnn_tensor_destroy, None) })
 }
 
 impl Drop for ImageProcess {

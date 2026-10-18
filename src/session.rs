@@ -5,9 +5,27 @@
 
 use crate::config::ScheduleConfig;
 use crate::error::{MnnError, MnnResult};
+use crate::interpreter::InterpreterHandle;
 use crate::tensor::Tensor;
 use mnn_rs_sys::MNNSession;
 use std::ffi::CString;
+use std::sync::Arc;
+
+pub(crate) struct SessionHandle {
+    pub(crate) inner: *mut MNNSession,
+    interpreter: *mut mnn_rs_sys::MNNInterpreter,
+    _interpreter_owner: Option<Arc<InterpreterHandle>>,
+    #[cfg(feature = "runtime")]
+    _runtime_owner: Option<Arc<crate::runtime::RuntimeHandle>>,
+}
+
+impl Drop for SessionHandle {
+    fn drop(&mut self) {
+        if !self.inner.is_null() && !self.interpreter.is_null() {
+            unsafe { mnn_rs_sys::mnn_interpreter_release_session(self.interpreter, self.inner) };
+        }
+    }
+}
 
 /// An inference session.
 ///
@@ -23,6 +41,7 @@ pub struct Session {
     interpreter: *mut mnn_rs_sys::MNNInterpreter,
     /// Whether the session has been run at least once
     has_run: bool,
+    owner: Arc<SessionHandle>,
 }
 
 // Safety: Session operations are thread-safe through MNN's internal synchronization
@@ -32,13 +51,11 @@ unsafe impl Sync for Session {}
 impl Session {
     /// Create a new session.
     ///
-    /// # Safety
-    /// The interpreter pointer must be valid.
-    pub(crate) unsafe fn new(
-        interpreter: *mut mnn_rs_sys::MNNInterpreter,
+    pub(crate) fn new(
+        interpreter_owner: Arc<InterpreterHandle>,
         config: ScheduleConfig,
     ) -> MnnResult<Self> {
-        // SAFETY: Caller ensures interpreter pointer is valid
+        let interpreter = interpreter_owner.inner;
         let inner = unsafe {
             mnn_rs_sys::mnn_interpreter_create_session(
                 interpreter,
@@ -55,6 +72,13 @@ impl Session {
             inner,
             interpreter,
             has_run: false,
+            owner: Arc::new(SessionHandle {
+                inner,
+                interpreter,
+                _interpreter_owner: Some(interpreter_owner),
+                #[cfg(feature = "runtime")]
+                _runtime_owner: None,
+            }),
         })
     }
 
@@ -66,17 +90,16 @@ impl Session {
     /// # Returns
     /// A mutable reference to the input tensor.
     pub fn get_input(&self, name: Option<&str>) -> MnnResult<Tensor> {
+        let c_name = name.map(CString::new).transpose()?;
+        let name_ptr = c_name
+            .as_ref()
+            .map_or(std::ptr::null(), |value| value.as_ptr());
         unsafe {
-            let name_ptr = match name {
-                Some(n) => {
-                    let c_name = CString::new(n)?;
-                    c_name.as_ptr()
-                }
-                None => std::ptr::null(),
-            };
-
-            let tensor_ptr =
-                mnn_rs_sys::mnn_interpreter_get_session_input(self.interpreter, self.inner, name_ptr);
+            let tensor_ptr = mnn_rs_sys::mnn_interpreter_get_session_input(
+                self.interpreter,
+                self.inner,
+                name_ptr,
+            );
 
             if tensor_ptr.is_null() {
                 return Err(MnnError::tensor_error(match name {
@@ -85,9 +108,10 @@ impl Session {
                 }));
             }
 
-            Ok(Tensor::from_ptr_with_name(
+            Ok(Tensor::from_session_ptr(
                 tensor_ptr,
                 name.map(|s| s.to_string()),
+                self.owner.clone(),
             ))
         }
     }
@@ -100,15 +124,11 @@ impl Session {
     /// # Returns
     /// A reference to the output tensor.
     pub fn get_output(&self, name: Option<&str>) -> MnnResult<Tensor> {
+        let c_name = name.map(CString::new).transpose()?;
+        let name_ptr = c_name
+            .as_ref()
+            .map_or(std::ptr::null(), |value| value.as_ptr());
         unsafe {
-            let name_ptr = match name {
-                Some(n) => {
-                    let c_name = CString::new(n)?;
-                    c_name.as_ptr()
-                }
-                None => std::ptr::null(),
-            };
-
             let tensor_ptr = mnn_rs_sys::mnn_interpreter_get_session_output(
                 self.interpreter,
                 self.inner,
@@ -122,9 +142,10 @@ impl Session {
                 }));
             }
 
-            Ok(Tensor::from_ptr_with_name(
+            Ok(Tensor::from_session_ptr(
                 tensor_ptr,
                 name.map(|s| s.to_string()),
+                self.owner.clone(),
             ))
         }
     }
@@ -168,9 +189,8 @@ impl Session {
 
     /// Get the memory usage of this session in bytes.
     pub fn memory_usage(&self) -> usize {
-        let memory_mb = unsafe {
-            mnn_rs_sys::mnn_interpreter_get_session_memory(self.interpreter, self.inner)
-        };
+        let memory_mb =
+            unsafe { mnn_rs_sys::mnn_interpreter_get_session_memory(self.interpreter, self.inner) };
         (memory_mb * 1024.0 * 1024.0) as usize
     }
 
@@ -207,22 +227,115 @@ impl Session {
     ///
     /// # Safety
     /// The pointers must be valid and the interpreter must outlive the session.
-    pub unsafe fn from_ptr(inner: *mut MNNSession, interpreter: *mut mnn_rs_sys::MNNInterpreter) -> Self {
+    pub unsafe fn from_ptr(
+        inner: *mut MNNSession,
+        interpreter: *mut mnn_rs_sys::MNNInterpreter,
+    ) -> Self {
         Self {
             inner,
             interpreter,
             has_run: false,
+            owner: Arc::new(SessionHandle {
+                inner,
+                interpreter,
+                _interpreter_owner: None,
+                #[cfg(feature = "runtime")]
+                _runtime_owner: None,
+            }),
+        }
+    }
+
+    #[cfg(feature = "runtime")]
+    pub(crate) unsafe fn from_ptr_with_owners(
+        inner: *mut MNNSession,
+        interpreter: Arc<InterpreterHandle>,
+        runtime: Arc<crate::runtime::RuntimeHandle>,
+    ) -> Self {
+        let interpreter_ptr = interpreter.inner;
+        Self {
+            inner,
+            interpreter: interpreter_ptr,
+            has_run: false,
+            owner: Arc::new(SessionHandle {
+                inner,
+                interpreter: interpreter_ptr,
+                _interpreter_owner: Some(interpreter),
+                _runtime_owner: Some(runtime),
+            }),
         }
     }
 }
 
-impl Drop for Session {
-    fn drop(&mut self) {
-        if !self.inner.is_null() && !self.interpreter.is_null() {
-            unsafe {
-                mnn_rs_sys::mnn_interpreter_release_session(self.interpreter, self.inner);
-            }
-        }
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    use crate::interpreter::InterpreterHandle;
+
+    #[test]
+    fn session_tensor_retains_session_and_interpreter_owners() {
+        let interpreter = Arc::new(InterpreterHandle {
+            inner: std::ptr::null_mut(),
+            _model_buffer: Some(vec![1, 2, 3].into_boxed_slice()),
+        });
+        let interpreter_weak = Arc::downgrade(&interpreter);
+        let session = Arc::new(SessionHandle {
+            inner: std::ptr::null_mut(),
+            interpreter: std::ptr::null_mut(),
+            _interpreter_owner: Some(interpreter.clone()),
+            #[cfg(feature = "runtime")]
+            _runtime_owner: None,
+        });
+        let session_weak = Arc::downgrade(&session);
+        let tensor =
+            unsafe { Tensor::from_session_ptr(std::ptr::null_mut(), None, session.clone()) };
+
+        drop(interpreter);
+        drop(session);
+        assert!(interpreter_weak.upgrade().is_some());
+        assert!(session_weak.upgrade().is_some());
+
+        drop(tensor);
+        assert!(session_weak.upgrade().is_none());
+        assert!(interpreter_weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn tensor_names_are_nul_terminated_and_reject_interior_nuls() {
+        let valid = CString::new("input").unwrap();
+        assert_eq!(valid.as_bytes_with_nul(), b"input\0");
+        assert!(CString::new("in\0put").is_err());
+    }
+
+    #[cfg(feature = "runtime")]
+    #[test]
+    fn session_tensor_retains_runtime_owner() {
+        let interpreter = Arc::new(InterpreterHandle {
+            inner: std::ptr::null_mut(),
+            _model_buffer: None,
+        });
+        let runtime = Arc::new(crate::runtime::RuntimeHandle {
+            inner: std::ptr::null_mut(),
+        });
+        let interpreter_weak = Arc::downgrade(&interpreter);
+        let runtime_weak = Arc::downgrade(&runtime);
+        let session = unsafe {
+            Session::from_ptr_with_owners(
+                std::ptr::null_mut(),
+                interpreter.clone(),
+                runtime.clone(),
+            )
+        };
+        let session_owner = session.owner.clone();
+        let tensor = unsafe { Tensor::from_session_ptr(std::ptr::null_mut(), None, session_owner) };
+
+        drop(interpreter);
+        drop(runtime);
+        drop(session);
+        assert!(interpreter_weak.upgrade().is_some());
+        assert!(runtime_weak.upgrade().is_some());
+        drop(tensor);
+        assert!(interpreter_weak.upgrade().is_none());
+        assert!(runtime_weak.upgrade().is_none());
     }
 }
 

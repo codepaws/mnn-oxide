@@ -1,66 +1,16 @@
-//! Build script for mnn-sys
-//!
-//! This script handles linking to the MNN library, supporting:
-//! - Static and dynamic linking
-//! - Multiple backends (CPU, CUDA, OpenCL, Vulkan, Metal)
-//! - Prebuilt binary download (default)
-//! - Build from source or use pre-installed library
-//! - Cross-platform builds
-//!
-//! # Build Modes (in priority order)
-//!
-//! 1. **use-prebuilt** (default): Download prebuilt binaries from GitHub Releases
-//! 2. **build-from-source**: Build MNN locally using CMake
-//! 3. **system-mnn**: Use system-installed MNN library
-//!
-//! ## Prebuilt Binaries
-//!
-//! Prebuilt binaries are automatically downloaded from GitHub Releases.
-//! Set `MNN_PREBUILT_URL` to use a custom download URL.
-//!
-//! ## Building from Source
-//!
-//! ## Source Code Location
-//!
-//! MNN source code is stored in a shared location to avoid duplicate clones:
-//! - `MNN_SOURCE_PATH` environment variable (highest priority)
-//! - `<project-root>/target/mnn-source` (default for project-level caching)
-//!
-//! ## Build Artifacts Location
-//!
-//! Compiled MNN libraries are cached per target to support cross-compilation:
-//! - `<project-root>/target/mnn-build/<target-triple>/`
-//!
-//! ## Usage
-//!
-//! ```bash
-//! # Default: download prebuilt binaries
-//! cargo build
-//!
-//! # Build from source instead
-//! cargo build --features build-from-source --no-default-features
-//!
-//! # Use existing MNN source
-//! MNN_SOURCE_PATH=/path/to/mnn cargo build --features build-from-source
-//!
-//! # Use pre-built MNN
-//! MNN_LIB_DIR=/path/to/mnn/lib MNN_INCLUDE_DIR=/path/to/mnn/include cargo build
-//! ```
+//! Build script for mnn-sys. The engine is acquired only through explicit configuration.
 
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-#[cfg(feature = "build-from-source")]
-use std::hash::{Hash, Hasher};
+#[path = "build_config.rs"]
+mod build_config;
+
 #[cfg(feature = "build-from-source")]
 use std::collections::hash_map::DefaultHasher;
-
-/// MNN version for prebuilt binaries - automatically reads from Cargo.toml
-const MNN_VERSION: &str = env!("CARGO_PKG_VERSION");
-/// GitHub repository for prebuilt downloads
-const GITHUB_REPO: &str = "wapznw/mnn-rs";
+#[cfg(feature = "build-from-source")]
+use std::hash::{Hash, Hasher};
 
 /// Get the NDK host tag based on the current host platform
 fn get_ndk_host_tag() -> &'static str {
@@ -85,125 +35,6 @@ fn get_ndk_host_tag() -> &'static str {
     }
 }
 
-/// Get the prebuilt variant name based on enabled features
-/// Priority: cuda > opencl > vulkan > cpu (default)
-fn get_prebuilt_variant() -> &'static str {
-    if cfg!(feature = "cuda") {
-        "cuda"
-    } else if cfg!(feature = "opencl") {
-        "opencl"
-    } else if cfg!(feature = "vulkan") {
-        "vulkan"
-    } else {
-        ""
-    }
-}
-
-/// Download and extract prebuilt MNN binaries
-#[cfg(feature = "use-prebuilt")]
-fn download_prebuilt(target: &str, out_dir: &std::path::Path, debug: bool) -> Option<(PathBuf, PathBuf)> {
-    use flate2::read::GzDecoder;
-
-    let variant = get_prebuilt_variant();
-    let prebuilt_dir = if variant.is_empty() {
-        out_dir.join("mnn-prebuilt")
-    } else {
-        out_dir.join(format!("mnn-prebuilt-{}", variant))
-    };
-    let lib_dir = prebuilt_dir.join("lib");
-    let include_dir = prebuilt_dir.join("include");
-
-    // Check if already downloaded and valid
-    if lib_dir.exists() && include_dir.exists() {
-        // Verify library file exists
-        let lib_exists = if cfg!(target_os = "windows") {
-            lib_dir.join("mnn.lib").exists() || lib_dir.join("MNN.lib").exists()
-        } else {
-            lib_dir.join("libMNN.a").exists()
-        };
-        if lib_exists {
-            if debug {
-                println!("cargo:warning=mnn-sys: Using cached prebuilt at {:?}", prebuilt_dir);
-            }
-            return Some((lib_dir, include_dir));
-        }
-    }
-
-    // Construct download URL with variant suffix
-    let archive_name = if variant.is_empty() {
-        format!("mnn-{}.tar.gz", target)
-    } else {
-        format!("mnn-{}-{}.tar.gz", target, variant)
-    };
-
-    let url = env::var("MNN_PREBUILT_URL").unwrap_or_else(|_| {
-        format!(
-            "https://github.com/{}/releases/download/v{}/{}",
-            GITHUB_REPO, MNN_VERSION, archive_name
-        )
-    });
-
-    println!("cargo:warning=mnn-sys: Downloading prebuilt MNN from: {}", url);
-
-    // Download the archive
-    let response = match ureq::get(&url).call() {
-        Ok(r) => r,
-        Err(e) => {
-            println!("cargo:warning=mnn-sys: Failed to download prebuilt: {}", e);
-            println!("cargo:warning=mnn-sys: Falling back to build-from-source or system-mnn");
-            return None;
-        }
-    };
-
-    if response.status() != 200 {
-        println!("cargo:warning=mnn-sys: Download failed with HTTP {}", response.status());
-        return None;
-    }
-
-    // Create prebuilt directory
-    fs::create_dir_all(&prebuilt_dir).ok()?;
-
-    // Extract the archive
-    let reader = response.into_reader();
-    let mut decoder = GzDecoder::new(reader);
-    let mut archive = tar::Archive::new(&mut decoder);
-
-    if let Err(e) = archive.unpack(&prebuilt_dir) {
-        println!("cargo:warning=mnn-sys: Failed to extract archive: {}", e);
-        // Clean up partial extraction
-        let _ = fs::remove_dir_all(&prebuilt_dir);
-        return None;
-    }
-
-    // Verify extraction was successful
-    if !lib_dir.exists() {
-        // Try to find extracted files (archive might not have top-level directory)
-        if let Ok(entries) = fs::read_dir(&prebuilt_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    // Check if this directory contains lib/include
-                    if path.join("lib").exists() {
-                        return Some((path.join("lib"), path.join("include")));
-                    }
-                }
-            }
-        }
-    }
-
-    if debug {
-        println!("cargo:warning=mnn-sys: Prebuilt extracted to {:?}", prebuilt_dir);
-    }
-
-    Some((lib_dir, include_dir))
-}
-
-/// Stub for when use-prebuilt feature is not enabled
-#[cfg(not(feature = "use-prebuilt"))]
-fn download_prebuilt(_target: &str, _out_dir: &std::path::Path, _debug: bool) -> Option<(PathBuf, PathBuf)> {
-    None
-}
-
 fn main() {
     // Skip build process for docs.rs - it doesn't need to link native libraries
     // docs.rs sets DOCS_RS=1 environment variable
@@ -225,8 +56,6 @@ fn main() {
     let target_os = get_target_os(&target);
     let target_env = get_target_env(&target);
     let target_arch = get_target_arch(&target);
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-
     if debug_build {
         println!("cargo:warning=mnn-sys: Target: {}", target);
         println!("cargo:warning=mnn-sys: Target OS: {}", target_os);
@@ -247,6 +76,46 @@ fn main() {
     let static_link = cfg!(feature = "static");
     let dynamic_link = cfg!(feature = "dynamic");
 
+    let mode = build_config::validate_acquisition(
+        use_prebuilt,
+        build_from_source,
+        _mnn_use_system,
+        mnn_lib_dir.is_some(),
+        mnn_include_dir.is_some(),
+    )
+    .unwrap_or_else(|message| panic!("MNN acquisition configuration error: {message}"));
+    if build_from_source {
+        let source = mnn_source_path.as_deref().expect("build-from-source requires MNN_SOURCE_PATH to an existing checkout; Cargo will not clone MNN");
+        let revision = mnn_version.as_deref().expect("build-from-source requires MNN_SOURCE_VERSION set to the exact 40-character source commit");
+        if !build_config::is_full_commit_sha(revision) {
+            panic!("MNN_SOURCE_VERSION must be a full 40-character commit SHA");
+        }
+        let output = Command::new("git")
+            .args(["-C", source, "rev-parse", "HEAD"])
+            .output()
+            .expect("Could not run git to verify MNN_SOURCE_PATH revision");
+        let actual = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !output.status.success() || !build_config::revision_matches(revision, &actual) {
+            panic!("MNN_SOURCE_PATH revision mismatch: expected {revision}, found {actual}");
+        }
+        let status = Command::new("git")
+            .args([
+                "-C",
+                source,
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ])
+            .output()
+            .expect("Could not inspect MNN_SOURCE_PATH working tree");
+        let dirty = String::from_utf8_lossy(&status.stdout).into_owned();
+        if !status.status.success() || !build_config::checkout_status_is_clean(&dirty) {
+            panic!("MNN_SOURCE_PATH must be clean at the pinned commit; tracked, untracked, and submodule changes are rejected:\n{dirty}");
+        }
+        emit_source_rerun_paths(source);
+    }
+
     if static_link && dynamic_link {
         panic!(
             "Cannot enable both 'static' and 'dynamic' features simultaneously.\n\
@@ -259,43 +128,19 @@ fn main() {
     // If no link mode specified, default to static
     let use_static = !dynamic_link;
 
-    // Priority: env vars -> prebuilt -> build-from-source -> system-mnn
+    // Explicit paths only. Default Cargo builds never acquire the MNN engine.
     // This allows testing with local artifacts without downloading
-    let (lib_dir, include_dir) = if mnn_lib_dir.is_some() && mnn_include_dir.is_some() {
+    let (lib_dir, include_dir) = if mode == build_config::AcquisitionMode::BringYourOwn {
         // Use environment variables if both are set (highest priority for testing)
         if debug_build {
-            println!("cargo:warning=mnn-sys: Using MNN_LIB_DIR and MNN_INCLUDE_DIR from environment");
+            println!(
+                "cargo:warning=mnn-sys: Using MNN_LIB_DIR and MNN_INCLUDE_DIR from environment"
+            );
         }
         (
             mnn_lib_dir.as_ref().map(|p| PathBuf::from(p)),
             mnn_include_dir.as_ref().map(|p| PathBuf::from(p)),
         )
-    } else if use_prebuilt && !build_from_source {
-        // Try to download prebuilt binaries
-        if let Some((lib, inc)) = download_prebuilt(&target, &out_dir, debug_build) {
-            if debug_build {
-                println!("cargo:warning=mnn-sys: Using prebuilt binaries");
-            }
-            (Some(lib), Some(inc))
-        } else {
-            // Fall back to build-from-source or env vars
-            if debug_build {
-                println!("cargo:warning=mnn-sys: Prebuilt download failed, trying fallback");
-            }
-            get_lib_and_include_dirs(
-                build_from_source,
-                &mnn_source_path,
-                &mnn_version,
-                &mnn_lib_dir,
-                &mnn_include_dir,
-                use_static,
-                debug_build,
-                &target,
-                &target_os,
-                &target_env,
-                &target_arch,
-            )
-        }
     } else if build_from_source {
         get_lib_and_include_dirs(
             true,
@@ -311,7 +156,7 @@ fn main() {
             &target_arch,
         )
     } else {
-        // Use env vars or system library
+        // Explicit bring-your-own paths, no host-wide search.
         (
             mnn_lib_dir.map(PathBuf::from),
             mnn_include_dir.map(PathBuf::from),
@@ -322,34 +167,23 @@ fn main() {
     let wrapper_dir = PathBuf::from("wrapper");
     let wrapper_cpp = wrapper_dir.join("mnn_wrapper.cpp");
 
-    // Check if we have MNN headers available
+    // The checked-in C++ shim needs headers from the explicitly selected install.
     if include_dir.is_none() {
         panic!(
             "MNN headers not found!\n\
-            \n\
-            Please do one of the following:\n\
-            1. Use default features to download prebuilt binaries:\n\
-               cargo build\n\
-            \n\
-            2. Enable 'build-from-source' feature to build locally:\n\
-               cargo build --features build-from-source --no-default-features\n\
-            \n\
-            3. Set MNN_INCLUDE_DIR and MNN_LIB_DIR environment variables:\n\
-               set MNN_INCLUDE_DIR=/path/to/mnn/include\n\
-               set MNN_LIB_DIR=/path/to/mnn/lib\n\
-            \n\
-            4. Set MNN_SOURCE_PATH to use existing MNN source:\n\
-               set MNN_SOURCE_PATH=/path/to/mnn/source\n\
-               cargo build --features build-from-source --no-default-features"
+            Set MNN_INCLUDE_DIR and MNN_LIB_DIR to an explicitly installed MNN.\n\
+            For an explicit source build, use build-from-source with MNN_SOURCE_PATH and the exact MNN_SOURCE_VERSION commit SHA.\n\
+            Cargo will not download or clone the MNN engine."
         );
+    }
+
+    if lib_dir.is_none() {
+        panic!("MNN library directory is not configured. Set MNN_LIB_DIR alongside MNN_INCLUDE_DIR; no system-wide search or fallback is performed.");
     }
 
     // Build the wrapper library
     let mut build = cc::Build::new();
-    build
-        .cpp(true)
-        .file(&wrapper_cpp)
-        .include(&wrapper_dir);
+    build.cpp(true).file(&wrapper_cpp).include(&wrapper_dir);
 
     // Add MNN include directory if available
     if let Some(ref inc_dir) = include_dir {
@@ -359,11 +193,11 @@ fn main() {
     }
 
     // Feature-specific compile definitions
-    // Note: image-process requires MNN with CV module (included in prebuilt binaries)
+    // The selected MNN library must contain the CV module.
     if cfg!(feature = "image-process") {
         build.define("MNN_IMAGE_PROCESS", None);
         // MNN_IMGCODECS and MNN_BUILD_OPENCV require building MNN from source
-        // Prebuilt binaries have basic ImageProcess support but not imread/imwrite
+        // CV codecs are enabled only for source builds.
         if cfg!(feature = "build-from-source") {
             build.define("MNN_BUILD_OPENCV", "ON");
             build.define("MNN_IMGCODECS", "ON");
@@ -371,35 +205,34 @@ fn main() {
         println!("cargo:rustc-cfg=feature=\"image-process\"");
     }
     // Note: module feature requires MNN with training module (Express/Module)
-    // Only enable when building from source, as prebuilt binaries don't include it
+    // Optional modules are compiled only in explicit source builds.
     if cfg!(feature = "module") && cfg!(feature = "build-from-source") {
         build.define("MNN_MODULE_ENABLED", None);
         println!("cargo:rustc-cfg=feature=\"module\"");
     } else if cfg!(feature = "module") {
-        // Warn if module feature is used with prebuilt binaries
-        println!("cargo:warning=mnn-sys: 'module' feature requires MNN with training module. Skipping - use --features build-from-source to enable.");
+        panic!("'module' requires an MNN source build with the training module");
     }
     // Note: runtime feature requires MNN with RuntimeManager (Express::Executor)
-    // Only enable when building from source, as prebuilt binaries don't include it
     if cfg!(feature = "runtime") && cfg!(feature = "build-from-source") {
         build.define("MNN_RUNTIME_ENABLED", None);
         println!("cargo:rustc-cfg=feature=\"runtime\"");
     } else if cfg!(feature = "runtime") {
-        // Warn if runtime feature is used with prebuilt binaries
-        println!("cargo:warning=mnn-sys: 'runtime' feature requires MNN with RuntimeManager. Skipping - use --features build-from-source to enable.");
+        panic!("'runtime' requires an MNN source build with RuntimeManager");
     }
 
     // Compile module wrapper if feature enabled
     // Note: This requires MNN with training module, only available when building from source
     let module_wrapper_cpp = wrapper_dir.join("mnn_module_wrapper.cpp");
-    if cfg!(feature = "module") && cfg!(feature = "build-from-source") && module_wrapper_cpp.exists() {
+    if cfg!(feature = "module")
+        && cfg!(feature = "build-from-source")
+        && module_wrapper_cpp.exists()
+    {
         build.file(&module_wrapper_cpp);
     }
 
     // Compile LLM wrapper if feature enabled
     // Note: LLM requires MNN built with MNN_BUILD_LLM=ON. Both build-from-source
-    // and the prebuilt binaries (released by the CI workflow) ship the LLM engine
-    // and its headers (installed to <include>/llm/llm.hpp). For build-from-source
+    // and the selected MNN library must include its headers (installed to <include>/llm/llm.hpp). For source builds
     // also add the source-tree LLM include dir as a fallback in case the install
     // step is incomplete.
     let llm_wrapper_cpp = wrapper_dir.join("mnn_llm_wrapper.cpp");
@@ -461,7 +294,11 @@ fn main() {
             );
         }
 
-        let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+        let exe_suffix = if cfg!(target_os = "windows") {
+            ".exe"
+        } else {
+            ""
+        };
 
         // Set AR tool path - use llvm-ar from NDK
         let ar_path = toolchain_bin.join(format!("llvm-ar{}", exe_suffix));
@@ -479,7 +316,16 @@ fn main() {
             build.compiler(&clang_path);
             // Set target with API level
             build.flag(format!("--target={}{}", target_triple, api_level));
-            build.flag(format!("--sysroot={}", ndk_path.join("toolchains").join("llvm").join("prebuilt").join(host_tag).join("sysroot").display()));
+            build.flag(format!(
+                "--sysroot={}",
+                ndk_path
+                    .join("toolchains")
+                    .join("llvm")
+                    .join("prebuilt")
+                    .join(host_tag)
+                    .join("sysroot")
+                    .display()
+            ));
         } else {
             panic!(
                 "Could not find clang++ in NDK.\n\
@@ -490,7 +336,10 @@ fn main() {
 
         if debug_build {
             println!("cargo:warning=mnn-sys: Android NDK: {:?}", ndk_path);
-            println!("cargo:warning=mnn-sys: Android target: {}{}", target_triple, api_level);
+            println!(
+                "cargo:warning=mnn-sys: Android target: {}{}",
+                target_triple, api_level
+            );
         }
     }
 
@@ -507,7 +356,13 @@ fn main() {
             .ok()
             .map(|v| v.to_uppercase())
             .filter(|v| v == "MT" || v == "MD")
-            .unwrap_or_else(|| if use_static { "MT".to_string() } else { "MD".to_string() });
+            .unwrap_or_else(|| {
+                if use_static {
+                    "MT".to_string()
+                } else {
+                    "MD".to_string()
+                }
+            });
         build.flag(format!("/{}", msvc_runtime));
         if debug_build {
             println!(
@@ -536,9 +391,6 @@ fn main() {
     // Configure linking
     if let Some(ref lib_path) = lib_dir {
         println!("cargo:rustc-link-search=native={}", lib_path.display());
-    } else {
-        // Try common library paths (for system-mnn mode)
-        search_common_paths(use_static, &target_os);
     }
 
     // Link the library
@@ -549,16 +401,6 @@ fn main() {
         println!("cargo:rustc-link-lib={}=MNN", link_type);
     } else {
         println!("cargo:rustc-link-lib={}=mnn", link_type);
-    }
-
-    // Print help message if library not found
-    if lib_dir.is_none() {
-        println!("cargo:warning=mnn-sys: MNN library not found in MNN_LIB_DIR or common paths");
-        println!("cargo:warning=mnn-sys: Please do one of the following:");
-        println!("cargo:warning=  1. Use default features to download prebuilt binaries: cargo build");
-        println!("cargo:warning=  2. Set MNN_LIB_DIR to the directory containing libmnn.a or mnn.lib");
-        println!("cargo:warning=  3. Use --features build-from-source to build MNN locally");
-        println!("cargo:warning=See https://github.com/alibaba/MNN for MNN installation instructions");
     }
 
     // Configure platform-specific settings
@@ -574,7 +416,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MNN_INCLUDE_DIR");
     println!("cargo:rerun-if-env-changed=MNN_USE_SYSTEM");
     println!("cargo:rerun-if-env-changed=MNN_MSVC_RUNTIME");
-    println!("cargo:rerun-if-env-changed=MNN_PREBUILT_URL");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=ANDROID_NDK_HOME");
     println!("cargo:rerun-if-env-changed=NDK_HOME");
@@ -587,6 +428,51 @@ fn main() {
 
     if debug_build {
         println!("cargo:warning=mnn-sys: Build script completed successfully");
+    }
+}
+
+/// Tell Cargo to rerun this build script when any tracked source file changes
+/// or when an untracked file/directory is added beneath an existing source dir.
+fn emit_source_rerun_paths(source: &str) {
+    use std::collections::HashSet;
+
+    let root = Command::new("git")
+        .args(["-C", source, "rev-parse", "--show-toplevel"])
+        .output()
+        .expect("Could not find MNN source root");
+    if !root.status.success() {
+        panic!("Could not find MNN source root for Cargo change tracking");
+    }
+    let root = PathBuf::from(String::from_utf8_lossy(&root.stdout).trim());
+    let files = Command::new("git")
+        .args(["-C", source, "ls-files", "--cached"])
+        .output()
+        .expect("Could not enumerate MNN tracked source files");
+    if !files.status.success() {
+        panic!("Could not enumerate MNN tracked source files for Cargo change tracking");
+    }
+
+    let mut watched = HashSet::new();
+    watched.insert(root.clone());
+    for relative in String::from_utf8_lossy(&files.stdout).lines() {
+        let path = root.join(relative);
+        watched.insert(path.clone());
+        let mut parent = path.parent();
+        while let Some(directory) = parent {
+            if !directory.starts_with(&root) {
+                break;
+            }
+            watched.insert(directory.to_path_buf());
+            if directory == root {
+                break;
+            }
+            parent = directory.parent();
+        }
+    }
+    let mut watched: Vec<_> = watched.into_iter().collect();
+    watched.sort();
+    for path in watched {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
 }
 
@@ -665,44 +551,12 @@ fn get_target_directory() -> PathBuf {
         return current.to_path_buf();
     }
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     manifest_dir.join("target")
 }
 
-/// Clone MNN from GitHub
-fn clone_mnn_from_github(dest: &std::path::Path, version: Option<&str>, debug: bool) {
-    if debug {
-        println!("cargo:warning=mnn-sys: Cloning MNN from GitHub to {:?}", dest);
-    }
-
-    let repo_url = "https://github.com/alibaba/MNN.git";
-
-    // Pin MNN to a fixed tag/branch/commit when MNN_SOURCE_VERSION is set so
-    // builds are reproducible. Otherwise the latest main branch is used.
-    let mut cmd = Command::new("git");
-    match version {
-        Some(ver) if !ver.is_empty() => {
-            cmd.args(["clone", "--depth", "1", "--branch", ver, repo_url, dest.to_str().unwrap()]);
-        }
-        _ => {
-            cmd.args(["clone", "--depth", "1", repo_url, dest.to_str().unwrap()]);
-        }
-    }
-
-    let status = cmd
-        .status()
-        .expect("Failed to run git clone. Please install git or set MNN_SOURCE_PATH to an existing MNN source directory.");
-
-    if !status.success() {
-        panic!("Failed to clone MNN from GitHub. Please clone manually or set MNN_SOURCE_PATH.");
-    }
-
-    if debug {
-        println!("cargo:warning=mnn-sys: MNN cloned successfully");
-    }
-}
-
-/// Get library and include directories, with fallback to build-from-source
+/// Get library and include directories for an explicit acquisition selection.
 fn get_lib_and_include_dirs(
     build_from_source: bool,
     mnn_source_path: &Option<String>,
@@ -720,27 +574,17 @@ fn get_lib_and_include_dirs(
         // Get the project's target directory (shared across all builds)
         let target_dir = get_target_directory();
 
-        // Source path: use MNN_SOURCE_PATH or shared location
-        let source_path = match mnn_source_path {
-            Some(path) => PathBuf::from(path),
-            None => {
-                // Use shared source directory in project's target folder
-                // This is shared across all build targets
-                let shared_source = target_dir.join("mnn-source");
-                if !shared_source.exists() {
-                    clone_mnn_from_github(&shared_source, mnn_version.as_deref(), debug);
-                } else if debug {
-                    println!("cargo:warning=mnn-sys: Using cached MNN source at {:?}", shared_source);
-                }
-                shared_source
-            }
-        };
+        let source_path = PathBuf::from(
+            mnn_source_path
+                .as_deref()
+                .expect("build-from-source requires MNN_SOURCE_PATH; Cargo never clones MNN"),
+        );
 
-        // Build directory: per-target to support cross-compilation
-        // Format: target/mnn-build/<target-triple>/
-        let build_dir = target_dir
-            .join("mnn-build")
-            .join(target);
+        // Keep output isolated by target, verified source revision, and source
+        // checkout path so a changed pin can never reuse stale native output.
+        let revision = mnn_version.as_deref().expect("validated source revision");
+        let cache_id = build_config::source_cache_identity(&source_path, revision);
+        let build_dir = target_dir.join("mnn-build").join(target).join(cache_id);
 
         let (lib_dir, include_dir) = build_mnn_from_source(
             &source_path,
@@ -788,7 +632,13 @@ fn compute_config_hash(
             .ok()
             .map(|v| v.to_uppercase())
             .filter(|v| v == "MT" || v == "MD")
-            .unwrap_or_else(|| if use_static { "MT".to_string() } else { "MD".to_string() });
+            .unwrap_or_else(|| {
+                if use_static {
+                    "MT".to_string()
+                } else {
+                    "MD".to_string()
+                }
+            });
         msvc_runtime.hash(&mut hasher);
     }
 
@@ -812,7 +662,7 @@ fn compute_config_hash(
 /// mnn-rs static builds), the `llm` target in transformers/llm/engine is an
 /// OBJECT library, but its CMakeLists.txt attaches a POST_BUILD command to it.
 /// Modern CMake rejects POST_BUILD on OBJECT libraries, which fails Android
-/// builds. Affects MNN 3.6.1 and current main. Patch the file in place
+/// builds. Affects MNN 3.6.1 and current main. Patch a disposable build copy
 /// (idempotently) to copy headers at configure time instead. Mirrors
 /// scripts/patch_mnn_llm_cmake.py.
 fn patch_llm_cmake_for_object_library(source_path: &std::path::Path, debug: bool) {
@@ -913,12 +763,6 @@ fn build_mnn_from_source(
         println!("cargo:warning=mnn-sys: Install dir: {:?}", install_dir);
     }
 
-    // Workaround for upstream MNN bug (OBJECT library + POST_BUILD) that fails
-    // Android builds with modern CMake.
-    if target_os == "android" {
-        patch_llm_cmake_for_object_library(source_path, debug);
-    }
-
     // Compute configuration hash
     let config_hash = compute_config_hash(target, target_os, target_env, target_arch, _static);
     let config_file = build_dir.join(".mnn-build-config");
@@ -949,13 +793,30 @@ fn build_mnn_from_source(
 
     if lib_path.exists() && !need_rebuild {
         if debug {
-            println!("cargo:warning=mnn-sys: Using cached MNN build at {:?}", install_dir);
+            println!(
+                "cargo:warning=mnn-sys: Using cached MNN build at {:?}",
+                install_dir
+            );
         }
         return (install_dir.join("lib"), install_dir.join("include"));
     }
 
     // Create build directory
     std::fs::create_dir_all(&build_dir).expect("Failed to create build directory");
+
+    // Android's CMake workaround edits its input file. Configure from a local
+    // copy so the validated MNN checkout remains unchanged.
+    let cmake_source = if target_os == "android" {
+        let source_copy = build_dir.join("source-tree-tracked");
+        if !source_copy.exists() {
+            copy_tracked_source_tree(source_path, &source_copy)
+                .expect("Failed to create isolated MNN source copy for Android build");
+        }
+        patch_llm_cmake_for_object_library(&source_copy, debug);
+        source_copy
+    } else {
+        source_path.to_path_buf()
+    };
 
     // Store new configuration hash
     std::fs::write(&config_file, config_hash.to_string()).expect("Failed to write config file");
@@ -1011,9 +872,7 @@ fn build_mnn_from_source(
     };
 
     // Configure CMake options based on features
-    let mut cmake_args = vec![
-        format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()),
-    ];
+    let mut cmake_args = vec![format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display())];
 
     // On Windows MSVC, build MNN with a CRT matching the link mode so the
     // wrapper and the linked MNN library agree: static -> /MT, dynamic -> /MD
@@ -1080,7 +939,11 @@ fn build_mnn_from_source(
     // forces). If that pre-placed directory exists, tell FetchContent to trust
     // it and skip all network git operations (offline build support).
     if cfg!(feature = "cuda") {
-        let cutlass_version = if cfg!(feature = "llm") { "v4.0.0" } else { "v2.9.0" };
+        let cutlass_version = if cfg!(feature = "llm") {
+            "v4.0.0"
+        } else {
+            "v2.9.0"
+        };
         let cutlass_dir = source_path
             .join("3rd_party")
             .join("cutlass")
@@ -1123,19 +986,46 @@ fn build_mnn_from_source(
 
     // x86 SIMD options (controlled by features)
     // Default: enabled for x86_64, disabled for x86 (32-bit)
-    let use_sse = cfg!(feature = "sse") || (target_arch == "x86_64" && !cfg!(feature = "sse") && !cfg!(feature = "avx2"));
+    let use_sse = cfg!(feature = "sse")
+        || (target_arch == "x86_64" && !cfg!(feature = "sse") && !cfg!(feature = "avx2"));
     let use_avx2 = cfg!(feature = "avx2");
     let use_avx512 = cfg!(feature = "avx512");
 
     // For 32-bit x86, disable all SIMD by default unless explicitly enabled
     if target_arch == "x86" {
-        cmake_args.push(format!("-DMNN_USE_SSE={}", if cfg!(feature = "sse") { "ON" } else { "OFF" }));
-        cmake_args.push(format!("-DMNN_AVX2={}", if cfg!(feature = "avx2") { "ON" } else { "OFF" }));
-        cmake_args.push(format!("-DMNN_AVX512={}", if cfg!(feature = "avx512") { "ON" } else { "OFF" }));
+        cmake_args.push(format!(
+            "-DMNN_USE_SSE={}",
+            if cfg!(feature = "sse") { "ON" } else { "OFF" }
+        ));
+        cmake_args.push(format!(
+            "-DMNN_AVX2={}",
+            if cfg!(feature = "avx2") { "ON" } else { "OFF" }
+        ));
+        cmake_args.push(format!(
+            "-DMNN_AVX512={}",
+            if cfg!(feature = "avx512") {
+                "ON"
+            } else {
+                "OFF"
+            }
+        ));
     } else if target_arch == "x86_64" {
-        cmake_args.push(format!("-DMNN_USE_SSE={}", if use_sse || use_avx2 || use_avx512 { "ON" } else { "OFF" }));
-        cmake_args.push(format!("-DMNN_AVX2={}", if use_avx2 || use_avx512 { "ON" } else { "OFF" }));
-        cmake_args.push(format!("-DMNN_AVX512={}", if use_avx512 { "ON" } else { "OFF" }));
+        cmake_args.push(format!(
+            "-DMNN_USE_SSE={}",
+            if use_sse || use_avx2 || use_avx512 {
+                "ON"
+            } else {
+                "OFF"
+            }
+        ));
+        cmake_args.push(format!(
+            "-DMNN_AVX2={}",
+            if use_avx2 || use_avx512 { "ON" } else { "OFF" }
+        ));
+        cmake_args.push(format!(
+            "-DMNN_AVX512={}",
+            if use_avx512 { "ON" } else { "OFF" }
+        ));
     }
 
     // Build type
@@ -1145,11 +1035,17 @@ fn build_mnn_from_source(
     if target_os == "windows" && target_env == "gnu" {
         if target_arch == "x86" {
             cmake_args.push(String::from("-DCMAKE_C_COMPILER=i686-w64-mingw32-gcc.exe"));
-            cmake_args.push(String::from("-DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++.exe"));
+            cmake_args.push(String::from(
+                "-DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++.exe",
+            ));
             cmake_args.push(String::from("-DCMAKE_SYSTEM_NAME=Windows"));
         } else if target_arch == "x86_64" {
-            cmake_args.push(String::from("-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc.exe"));
-            cmake_args.push(String::from("-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++.exe"));
+            cmake_args.push(String::from(
+                "-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc.exe",
+            ));
+            cmake_args.push(String::from(
+                "-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++.exe",
+            ));
             cmake_args.push(String::from("-DCMAKE_SYSTEM_NAME=Windows"));
         }
     }
@@ -1174,10 +1070,16 @@ fn build_mnn_from_source(
         // Use NDK toolchain file
         let toolchain_file = ndk_path.join("build/cmake/android.toolchain.cmake");
         if !toolchain_file.exists() {
-            panic!("Android NDK toolchain file not found at {:?}", toolchain_file);
+            panic!(
+                "Android NDK toolchain file not found at {:?}",
+                toolchain_file
+            );
         }
 
-        cmake_args.push(format!("-DCMAKE_TOOLCHAIN_FILE={}", toolchain_file.display()));
+        cmake_args.push(format!(
+            "-DCMAKE_TOOLCHAIN_FILE={}",
+            toolchain_file.display()
+        ));
         cmake_args.push(format!("-DANDROID_ABI={}", abi));
         cmake_args.push(format!("-DANDROID_PLATFORM={}", platform));
         cmake_args.push("-DANDROID_STL=c++_static".to_string());
@@ -1198,9 +1100,13 @@ fn build_mnn_from_source(
         // Determine iOS platform and architecture
         let (platform, arch, sdk_name) = match target {
             t if t.starts_with("aarch64-apple-ios") => ("OS64", "arm64", "iphoneos"),
-            t if t.starts_with("aarch64-apple-ios-sim") => ("SIMULATORARM64", "arm64", "iphonesimulator"),
+            t if t.starts_with("aarch64-apple-ios-sim") => {
+                ("SIMULATORARM64", "arm64", "iphonesimulator")
+            }
             t if t.starts_with("x86_64-apple-ios") => ("SIMULATOR64", "x86_64", "iphonesimulator"),
-            t if t.starts_with("i386-apple-ios") || t.starts_with("i686-apple-ios") => ("SIMULATOR", "i386", "iphonesimulator"),
+            t if t.starts_with("i386-apple-ios") || t.starts_with("i686-apple-ios") => {
+                ("SIMULATOR", "i386", "iphonesimulator")
+            }
             t if t.starts_with("armv7-apple-ios") => ("OS", "armv7", "iphoneos"),
             t if t.starts_with("armv7s-apple-ios") => ("OS", "armv7s", "iphoneos"),
             _ => panic!("Unsupported iOS target: {}", target),
@@ -1240,13 +1146,15 @@ fn build_mnn_from_source(
     cmd.args(&extra_args);
 
     cmd.args(["-B", build_dir.to_str().unwrap()]);
-    cmd.args(["-S", source_path.to_str().unwrap()]);
+    cmd.args(["-S", cmake_source.to_str().unwrap()]);
 
     if debug {
         println!("cargo:warning=mnn-sys: CMake configure command: {:?}", cmd);
     }
 
-    let status = cmd.status().expect("Failed to run CMake configure. Make sure cmake is installed.");
+    let status = cmd
+        .status()
+        .expect("Failed to run CMake configure. Make sure cmake is installed.");
 
     if !status.success() {
         panic!("CMake configure failed");
@@ -1274,9 +1182,7 @@ fn build_mnn_from_source(
         println!("cargo:warning=mnn-sys: Build command: {:?}", build_cmd);
     }
 
-    let build_status = build_cmd
-        .status()
-        .expect("Failed to run CMake build");
+    let build_status = build_cmd.status().expect("Failed to run CMake build");
 
     if !build_status.success() {
         panic!("CMake build failed");
@@ -1292,9 +1198,7 @@ fn build_mnn_from_source(
         println!("cargo:warning=mnn-sys: Install command: {:?}", install_cmd);
     }
 
-    let install_status = install_cmd
-        .status()
-        .expect("Failed to run CMake install");
+    let install_status = install_cmd.status().expect("Failed to run CMake install");
 
     if !install_status.success() {
         // cmake --install might fail on some platforms, try manual installation
@@ -1307,11 +1211,18 @@ fn build_mnn_from_source(
     // MNN CMake doesn't install CV headers by default
     if cfg!(feature = "image-process") {
         let cv_include_dest = install_dir.join("include").join("MNN").join("cv");
-        let cv_include_src = source_path.join("tools").join("cv").join("include").join("cv");
+        let cv_include_src = source_path
+            .join("tools")
+            .join("cv")
+            .join("include")
+            .join("cv");
 
         if cv_include_src.exists() {
             if debug {
-                println!("cargo:warning=mnn-sys: Copying CV headers from {:?}", cv_include_src);
+                println!(
+                    "cargo:warning=mnn-sys: Copying CV headers from {:?}",
+                    cv_include_src
+                );
             }
 
             // Create destination directory
@@ -1328,7 +1239,11 @@ fn build_mnn_from_source(
 
     // Check if install directory was created
     let installed_lib = install_dir.join("lib").join(if target_os == "windows" {
-        if target_env == "gnu" { "libMNN.a" } else { "mnn.lib" }
+        if target_env == "gnu" {
+            "libMNN.a"
+        } else {
+            "mnn.lib"
+        }
     } else {
         "libmnn.a"
     });
@@ -1348,13 +1263,19 @@ fn build_mnn_from_source(
 
         // Copy library if it exists in build dir
         let lib_in_build = build_dir.join(if target_os == "windows" {
-            if target_env == "gnu" { "libMNN.a" } else { "Release/mnn.lib" }
+            if target_env == "gnu" {
+                "libMNN.a"
+            } else {
+                "Release/mnn.lib"
+            }
         } else {
             "libMNN.a"
         });
 
         if lib_in_build.exists() {
-            let dest = install_dir.join("lib").join(installed_lib.file_name().unwrap());
+            let dest = install_dir
+                .join("lib")
+                .join(installed_lib.file_name().unwrap());
             if !dest.exists() {
                 if let Err(e) = std::fs::copy(&lib_in_build, &dest) {
                     if debug {
@@ -1388,6 +1309,9 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
         let ty = entry.file_type()?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
@@ -1395,6 +1319,64 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
             copy_dir_all(&src_path, &dst_path)?;
         } else {
             std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy only Git-indexed source files, recursively including initialized
+/// submodules. This excludes `.git` history, ignored build output, and other
+/// non-source files from the Android workaround snapshot.
+#[cfg(feature = "build-from-source")]
+fn copy_tracked_source_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    let root_output = Command::new("git")
+        .args([
+            "-C",
+            src.to_str().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-UTF8 MNN source path")
+            })?,
+            "rev-parse",
+            "--show-toplevel",
+        ])
+        .output()?;
+    if !root_output.status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "MNN source path is not a Git checkout",
+        ));
+    }
+    let root = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
+    let index_output = Command::new("git")
+        .args([
+            "-C",
+            src.to_str().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-UTF8 MNN source path")
+            })?,
+            "ls-files",
+            "--stage",
+            "--full-name",
+            "-z",
+        ])
+        .output()?;
+    if !index_output.status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "failed to enumerate tracked MNN source files",
+        ));
+    }
+    let entries = crate::build_config::parse_index_paths(&index_output.stdout)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    std::fs::create_dir_all(dst)?;
+    for (relative_path, is_submodule) in entries {
+        let source_file = root.join(&relative_path);
+        let destination = dst.join(&relative_path);
+        if is_submodule {
+            copy_tracked_source_tree(&source_file, &destination)?;
+        } else {
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(source_file, destination)?;
         }
     }
     Ok(())
@@ -1412,43 +1394,9 @@ fn build_mnn_from_source(
     _target_env: &str,
     _target_arch: &str,
 ) -> (PathBuf, PathBuf) {
-    panic!("'build-from-source' feature is not enabled. Enable it with --features build-from-source");
-}
-
-/// Search common library paths for MNN
-fn search_common_paths(use_static: bool, target_os: &str) {
-    let lib_name = if use_static { "libmnn.a" } else { "libmnn.so" };
-
-    let common_paths = if target_os == "windows" {
-        vec![
-            "C:\\Program Files\\MNN\\lib",
-            "C:\\MNN\\lib",
-            "C:\\msys64\\mingw64\\lib",
-            "C:\\msys64\\mingw32\\lib",
-        ]
-    } else if target_os == "macos" {
-        vec![
-            "/usr/local/lib",
-            "/usr/lib",
-            "/opt/homebrew/lib",
-            "/opt/local/lib",
-        ]
-    } else {
-        vec![
-            "/usr/local/lib",
-            "/usr/lib",
-            "/usr/lib/x86_64-linux-gnu",
-            "/opt/mnn/lib",
-        ]
-    };
-
-    for path in common_paths {
-        let full_path = std::path::Path::new(path).join(lib_name);
-        if full_path.exists() || std::path::Path::new(path).join("mnn.lib").exists() {
-            println!("cargo:rustc-link-search=native={}", path);
-            return;
-        }
-    }
+    panic!(
+        "'build-from-source' feature is not enabled. Enable it with --features build-from-source"
+    );
 }
 
 /// Configure platform-specific settings

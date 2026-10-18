@@ -9,9 +9,23 @@ use crate::error::{MnnError, MnnResult};
 use crate::session::Session;
 use crate::tensor::Tensor;
 use mnn_rs_sys::MNNInterpreter;
-use std::ffi::CString;
 use std::ffi::CStr;
+use std::ffi::CString;
 use std::path::Path;
+use std::sync::Arc;
+
+pub(crate) struct InterpreterHandle {
+    pub(crate) inner: *mut MNNInterpreter,
+    pub(crate) _model_buffer: Option<Box<[u8]>>,
+}
+
+impl Drop for InterpreterHandle {
+    fn drop(&mut self) {
+        if !self.inner.is_null() {
+            unsafe { mnn_rs_sys::mnn_interpreter_destroy(self.inner) };
+        }
+    }
+}
 
 /// A model interpreter that holds a loaded neural network model.
 ///
@@ -51,6 +65,7 @@ pub struct Interpreter {
     inner: *mut MNNInterpreter,
     /// Model path (if loaded from file)
     model_path: Option<String>,
+    pub(crate) _owner: Arc<InterpreterHandle>,
 }
 
 // Safety: Interpreter operations are thread-safe through MNN's internal synchronization
@@ -95,6 +110,10 @@ impl Interpreter {
         Ok(Self {
             inner,
             model_path: Some(path_str),
+            _owner: Arc::new(InterpreterHandle {
+                inner,
+                _model_buffer: None,
+            }),
         })
     }
 
@@ -122,10 +141,11 @@ impl Interpreter {
             return Err(MnnError::invalid_model("Model data is empty"));
         }
 
+        let model_buffer = data.to_vec().into_boxed_slice();
         let inner = unsafe {
             mnn_rs_sys::mnn_interpreter_create_from_buffer(
-                data.as_ptr() as *const std::ffi::c_void,
-                data.len(),
+                model_buffer.as_ptr() as *const std::ffi::c_void,
+                model_buffer.len(),
             )
         };
 
@@ -136,6 +156,10 @@ impl Interpreter {
         Ok(Self {
             inner,
             model_path: None,
+            _owner: Arc::new(InterpreterHandle {
+                inner,
+                _model_buffer: Some(model_buffer),
+            }),
         })
     }
 
@@ -150,7 +174,7 @@ impl Interpreter {
     /// # Returns
     /// A new session on success, or an error if session creation fails.
     pub fn create_session(&self, config: ScheduleConfig) -> MnnResult<Session> {
-        unsafe { Session::new(self.inner, config) }
+        Session::new(self._owner.clone(), config)
     }
 
     /// Get the model path (if loaded from file).
@@ -168,9 +192,7 @@ impl Interpreter {
             if ptr.is_null() {
                 return String::new();
             }
-            std::ffi::CStr::from_ptr(ptr)
-                .to_string_lossy()
-                .into_owned()
+            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
     }
 
@@ -184,9 +206,7 @@ impl Interpreter {
             if ptr.is_null() {
                 return String::new();
             }
-            std::ffi::CStr::from_ptr(ptr)
-                .to_string_lossy()
-                .into_owned()
+            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
     }
 
@@ -234,9 +254,8 @@ impl Interpreter {
     /// # Returns
     /// Ok(()) on success, or an error on failure.
     pub fn update_cache(&self, session: &Session) -> MnnResult<()> {
-        let result = unsafe {
-            mnn_rs_sys::mnn_interpreter_update_cache(self.inner, session.inner())
-        };
+        let result =
+            unsafe { mnn_rs_sys::mnn_interpreter_update_cache(self.inner, session.inner()) };
 
         if result != mnn_rs_sys::MNN_ERROR_NONE as i32 {
             return Err(MnnError::internal("Failed to update cache"));
@@ -347,9 +366,7 @@ impl Interpreter {
     /// # Returns
     /// FLOPS count in millions.
     pub fn get_session_flops(&self, session: &Session) -> f32 {
-        unsafe {
-            mnn_rs_sys::mnn_interpreter_get_session_flops(self.inner, session.inner())
-        }
+        unsafe { mnn_rs_sys::mnn_interpreter_get_session_flops(self.inner, session.inner()) }
     }
 
     /// Get session operator count.
@@ -360,19 +377,7 @@ impl Interpreter {
     /// # Returns
     /// Operator count (approximate, based on FLOPS).
     pub fn get_session_op_count(&self, session: &Session) -> i32 {
-        unsafe {
-            mnn_rs_sys::mnn_interpreter_get_session_op_count(self.inner, session.inner())
-        }
-    }
-}
-
-impl Drop for Interpreter {
-    fn drop(&mut self) {
-        if !self.inner.is_null() {
-            unsafe {
-                mnn_rs_sys::mnn_interpreter_destroy(self.inner);
-            }
-        }
+        unsafe { mnn_rs_sys::mnn_interpreter_get_session_op_count(self.inner, session.inner()) }
     }
 }
 

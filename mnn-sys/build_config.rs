@@ -1,0 +1,167 @@
+//! Pure acquisition configuration checks shared with build-script tests.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcquisitionMode {
+    BringYourOwn,
+    Source,
+}
+
+pub fn validate_acquisition(
+    prebuilt: bool,
+    source: bool,
+    system: bool,
+    has_lib_path: bool,
+    has_include_path: bool,
+) -> Result<AcquisitionMode, String> {
+    if has_lib_path != has_include_path {
+        return Err("MNN_LIB_DIR and MNN_INCLUDE_DIR must be supplied together".into());
+    }
+    if usize::from(prebuilt) + usize::from(source) > 1 {
+        return Err("use-prebuilt and build-from-source cannot be combined".into());
+    }
+    if prebuilt {
+        return Err("use-prebuilt acquisition is not implemented".into());
+    }
+    if source {
+        if system || has_lib_path {
+            return Err("source mode cannot be combined with system mode or library paths".into());
+        }
+        return Ok(AcquisitionMode::Source);
+    }
+    if system && !has_lib_path {
+        return Err("system-mnn requires explicit MNN_LIB_DIR and MNN_INCLUDE_DIR paths".into());
+    }
+    if has_lib_path {
+        return Ok(AcquisitionMode::BringYourOwn);
+    }
+    Err("configure MNN_LIB_DIR and MNN_INCLUDE_DIR explicitly".into())
+}
+
+pub fn is_full_commit_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub fn revision_matches(requested: &str, actual: &str) -> bool {
+    is_full_commit_sha(requested) && actual.eq_ignore_ascii_case(requested)
+}
+
+pub fn checkout_status_is_clean(status: &str) -> bool {
+    status.is_empty()
+}
+
+/// Parse `git ls-files --stage -z`, returning tracked paths and submodule flags.
+#[cfg(any(feature = "build-from-source", test))]
+pub fn parse_index_paths(output: &[u8]) -> Result<Vec<(std::path::PathBuf, bool)>, String> {
+    let mut paths = Vec::new();
+    for entry in output
+        .split(|&byte| byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let tab = entry
+            .iter()
+            .position(|&byte| byte == b'\t')
+            .ok_or_else(|| "invalid git ls-files --stage record".to_string())?;
+        let metadata = std::str::from_utf8(&entry[..tab])
+            .map_err(|_| "invalid git index metadata".to_string())?;
+        let mode = metadata
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| "missing git index mode".to_string())?;
+        let path = std::str::from_utf8(&entry[tab + 1..])
+            .map_err(|_| "non-UTF8 MNN source path is unsupported".to_string())?;
+        paths.push((std::path::PathBuf::from(path), mode == "160000"));
+    }
+    Ok(paths)
+}
+
+/// Return a cache identity that changes when either the verified checkout or
+/// its location changes. The latter avoids sharing build outputs across
+/// checkouts whose untracked/submodule inputs may differ despite equal HEADs.
+pub fn source_cache_identity(source_path: &std::path::Path, revision: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source_path.hash(&mut hasher);
+    revision.to_ascii_lowercase().hash(&mut hasher);
+    format!(
+        "{}-{:#016x}",
+        revision.to_ascii_lowercase(),
+        hasher.finish()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_conflicting_modes_and_partial_paths() {
+        assert!(validate_acquisition(true, true, false, false, false).is_err());
+        assert!(validate_acquisition(false, true, true, false, false).is_err());
+        assert!(validate_acquisition(false, false, false, true, false).is_err());
+    }
+
+    #[test]
+    fn accepts_only_explicit_byolibrary_or_pinned_source_selection() {
+        assert_eq!(
+            validate_acquisition(false, false, false, true, true),
+            Ok(AcquisitionMode::BringYourOwn)
+        );
+        assert_eq!(
+            validate_acquisition(false, true, false, false, false),
+            Ok(AcquisitionMode::Source)
+        );
+        assert!(validate_acquisition(false, false, true, false, false).is_err());
+    }
+
+    #[test]
+    fn requires_full_commit_sha_format() {
+        assert!(is_full_commit_sha(
+            "0123456789abcdef0123456789abcdef01234567"
+        ));
+        assert!(!is_full_commit_sha("3.6.1"));
+        assert!(!is_full_commit_sha(
+            "0123456789abcdef0123456789abcdef0123456z"
+        ));
+        let pin = "0123456789abcdef0123456789abcdef01234567";
+        assert!(revision_matches(pin, pin));
+        assert!(!revision_matches(
+            pin,
+            "1123456789abcdef0123456789abcdef01234567"
+        ));
+    }
+
+    #[test]
+    fn source_cache_identity_tracks_checkout_path_and_revision() {
+        let path = std::path::Path::new("mnn-source-a");
+        let revision_a = "0123456789abcdef0123456789abcdef01234567";
+        let revision_b = "1123456789abcdef0123456789abcdef01234567";
+        assert_ne!(
+            source_cache_identity(path, revision_a),
+            source_cache_identity(path, revision_b)
+        );
+        assert_ne!(
+            source_cache_identity(path, revision_a),
+            source_cache_identity(std::path::Path::new("mnn-source-b"), revision_a)
+        );
+    }
+
+    #[test]
+    fn source_checkout_must_have_no_tracked_or_untracked_changes() {
+        assert!(checkout_status_is_clean(""));
+        assert!(!checkout_status_is_clean(" M src/file.cpp\n"));
+        assert!(!checkout_status_is_clean("?? local-input.cmake\n"));
+    }
+
+    #[test]
+    fn tracked_snapshot_entries_include_submodules_but_not_untracked_files() {
+        let entries = b"100644 abc123 0\tCMakeLists.txt\0160000 def456 0\tthird_party/module\0";
+        assert_eq!(
+            parse_index_paths(entries).unwrap(),
+            vec![
+                (std::path::PathBuf::from("CMakeLists.txt"), false),
+                (std::path::PathBuf::from("third_party/module"), true),
+            ]
+        );
+        assert!(parse_index_paths(b"not-an-index-record").is_err());
+    }
+}

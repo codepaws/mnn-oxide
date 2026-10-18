@@ -8,6 +8,19 @@ use crate::error::{MnnError, MnnResult};
 use crate::interpreter::Interpreter;
 use crate::session::Session;
 use mnn_rs_sys::*;
+use std::sync::Arc;
+
+pub(crate) struct RuntimeHandle {
+    pub(crate) inner: *mut MNNRuntimeManager,
+}
+
+impl Drop for RuntimeHandle {
+    fn drop(&mut self) {
+        if !self.inner.is_null() {
+            unsafe { mnn_runtime_manager_destroy(self.inner) };
+        }
+    }
+}
 
 /// Runtime manager for sharing resources across sessions.
 ///
@@ -32,7 +45,7 @@ use mnn_rs_sys::*;
 /// # Ok::<(), mnn_rs::MnnError>(())
 /// ```
 pub struct RuntimeInfo {
-    inner: *mut MNNRuntimeManager,
+    inner: Arc<RuntimeHandle>,
 }
 
 // Safety: RuntimeManager is thread-safe through MNN's internal synchronization
@@ -53,17 +66,17 @@ impl RuntimeInfo {
     /// Runtime manager requires MNN to be built with runtime support.
     /// If not available, this will return an error.
     pub fn new(backend_type: BackendType, num_threads: i32) -> MnnResult<Self> {
-        let inner = unsafe {
-            mnn_runtime_manager_create(backend_type.to_mnn_type(), num_threads)
-        };
+        let inner = unsafe { mnn_runtime_manager_create(backend_type.to_mnn_type(), num_threads) };
 
         if inner.is_null() {
             return Err(MnnError::internal(
-                "Failed to create runtime manager. MNN may not be built with runtime support."
+                "Failed to create runtime manager. MNN may not be built with runtime support.",
             ));
         }
 
-        Ok(Self { inner })
+        Ok(Self {
+            inner: Arc::new(RuntimeHandle { inner }),
+        })
     }
 
     /// Create a session with this runtime manager.
@@ -82,35 +95,32 @@ impl RuntimeInfo {
         unsafe {
             let inner = mnn_interpreter_create_session_with_runtime(
                 interpreter.inner(),
-                self.inner,
+                self.inner.inner,
                 config.backend_config.backend_type.to_mnn_type(),
                 config.num_threads as i32,
             );
 
             if inner.is_null() {
-                return Err(MnnError::session_error("Failed to create session with runtime"));
+                return Err(MnnError::session_error(
+                    "Failed to create session with runtime",
+                ));
             }
 
-            Ok(Session::from_ptr(inner, interpreter.inner()))
+            Ok(Session::from_ptr_with_owners(
+                inner,
+                interpreter._owner.clone(),
+                self.inner.clone(),
+            ))
         }
     }
 
     /// Get the raw pointer to the underlying MNN RuntimeManager.
     ///
     /// # Safety
-    /// The returned pointer is owned by this RuntimeInfo and must not be freed.
+    /// The pointer is owned by the shared runtime handle and must not be freed.
+    /// It remains valid while this `RuntimeInfo` or any session created from it lives.
     pub unsafe fn as_ptr(&self) -> *const MNNRuntimeManager {
-        self.inner
-    }
-}
-
-impl Drop for RuntimeInfo {
-    fn drop(&mut self) {
-        if !self.inner.is_null() {
-            unsafe {
-                mnn_runtime_manager_destroy(self.inner);
-            }
-        }
+        self.inner.inner
     }
 }
 
@@ -135,8 +145,7 @@ pub trait InterpreterRuntimeExt {
 impl InterpreterRuntimeExt for Interpreter {
     fn create_session_with_runtime(&self, runtime: &RuntimeInfo) -> MnnResult<Session> {
         // Use default CPU config
-        let config = crate::config::ScheduleConfig::new()
-            .backend(BackendType::CPU);
+        let config = crate::config::ScheduleConfig::new().backend(BackendType::CPU);
         runtime.create_session(self, config)
     }
 }
