@@ -49,9 +49,9 @@ set MNN_INCLUDE_DIR=C:\path\to\mnn\include
 cargo build --no-default-features --features cpu,dynamic,system-mnn
 ```
 
-Prebuilt acquisition is opt-in and accepts only an artifact you supply: Cargo downloads it only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain `include/MNN/Interpreter.hpp` and a root `lib/` directory with a library filename recognized for the selected target and static/dynamic link mode; its exact bytes are verified against your SHA-256 before extraction. This project does not publish or select a prebuilt MNN artifact. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Static and dynamic linking are selected explicitly with `static` or `dynamic`.
+Prebuilt acquisition is opt-in and accepts only an artifact you supply: Cargo downloads it only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain `include/MNN/Interpreter.hpp` and a root `lib/` directory with a library filename recognized for the selected target and static/dynamic link mode; its exact bytes are verified against your SHA-256 before extraction. `MNN_PREBUILT_TARGET` is your assertion of the artifact target, checked only for an exact match with Cargo's `TARGET`; the binary architecture and ABI are not inspected. SHA-256 verifies bytes, not publisher, provenance, or license. You are responsible for confirming the artifact's provenance, license rights, and compatibility with your target, toolchain, and enabled MNN features. This project does not publish or select a prebuilt MNN artifact. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Static and dynamic linking are selected explicitly with `static` or `dynamic`.
 
-To use a user-supplied prebuilt archive, set all five variables below. `MNN_PREBUILT_TARGET` must exactly match Cargo's target triple (for example, `x86_64-unknown-linux-gnu`); `MNN_PREBUILT_VERSION` is a cache label chosen by you. The cache stores the verified archive and re-extracts it safely on each build. Archive symlinks, hard links, special files, and paths escaping the archive root are rejected.
+To use a user-supplied prebuilt archive, set all five variables below. `MNN_PREBUILT_TARGET` must exactly match Cargo's target triple (for example, `x86_64-unknown-linux-gnu`), but it is not a binary architecture check; `MNN_PREBUILT_VERSION` is a cache label chosen by you. The cache stores the verified archive and re-extracts it safely on each build. Archive symlinks, hard links, special files, and paths escaping the archive root are rejected.
 
 ```bash
 export MNN_PREBUILT_URL=https://example.invalid/path/to/your-mnn.tar.gz
@@ -280,7 +280,7 @@ cargo build --target aarch64-linux-android --features build-from-source --no-def
 - `x86_64-linux-android`
 - `i686-linux-android`
 
-No first-party Android prebuilt is selected or qualified. The generic `use-prebuilt` route can consume your target-compatible archive; otherwise supply explicit MNN library and header paths.
+No first-party Android prebuilt is selected or qualified. The generic `use-prebuilt` route can consume an archive you have confirmed is Android-target compatible; its binary architecture is not inspected. Otherwise supply explicit MNN library and header paths.
 
 **Building from source requirements:**
 - Android NDK (set `ANDROID_NDK_HOME` or `NDK_HOME` environment variable)
@@ -308,7 +308,7 @@ cargo build --target x86_64-apple-ios --no-default-features --features cpu,stati
 - `aarch64-apple-ios-sim` (iOS simulator on Apple Silicon)
 - `x86_64-apple-ios` (iOS simulator on Intel Macs)
 
-No first-party iOS prebuilt is selected or qualified. The generic `use-prebuilt` route can consume your target-compatible archive; otherwise supply explicit MNN library and header paths.
+No first-party iOS prebuilt is selected or qualified. The generic `use-prebuilt` route can consume an archive you have confirmed is iOS-target compatible; its binary architecture is not inspected. Otherwise supply explicit MNN library and header paths.
 
 ### Linux
 
@@ -350,7 +350,7 @@ cargo build --target x86_64-pc-windows-gnu --no-default-features --features cpu,
 | `MNN_SOURCE_VERSION` | Full 40-character commit SHA matching `MNN_SOURCE_PATH` |
 | `MNN_PREBUILT_URL` | HTTPS URL for a user-supplied MNN `.tar.gz` archive; used only with `use-prebuilt` |
 | `MNN_PREBUILT_SHA256` | Expected 64-character hexadecimal SHA-256 of the exact archive bytes |
-| `MNN_PREBUILT_TARGET` | Cargo target triple for the artifact; must match the current build target |
+| `MNN_PREBUILT_TARGET` | User-asserted artifact target label; must exactly match Cargo `TARGET` (the binary architecture/ABI is not inspected) |
 | `MNN_PREBUILT_VERSION` | User-defined artifact version/cache label, limited to ASCII letters, digits, `.`, `_`, and `-` |
 | `MNN_PREBUILT_CACHE_DIR` | Required cache directory for the verified archive and safe extraction |
 | `MNN_LIB_DIR` | Path to pre-built MNN library |
@@ -367,7 +367,7 @@ See [https://docs.rs/mnn-rs](https://docs.rs/mnn-rs) for full API documentation.
 
 ## MNN Version
 
-No prebuilt MNN artifact is selected, published, or qualified by this crate. The `use-prebuilt` route accepts a user-supplied archive and verifies its checksum; compatibility and native runtime behavior remain the artifact provider's responsibility. Source builds are pinned to the exact commit SHA in `MNN_SOURCE_VERSION`.
+No prebuilt MNN artifact is selected, published, or qualified by this crate. The `use-prebuilt` route accepts a user-supplied archive and verifies its checksum; the caller remains responsible for provenance, license rights, architecture/ABI compatibility, and native runtime behavior. Source builds are pinned to the exact commit SHA in `MNN_SOURCE_VERSION`.
 
 ## License
 

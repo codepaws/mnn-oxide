@@ -30,7 +30,7 @@ cargo build --no-default-features --features cpu,static
 
 Source builds require `build-from-source`, `MNN_SOURCE_PATH` pointing to an existing clean checkout, and `MNN_SOURCE_VERSION` set to its full 40-character commit SHA. Modified and untracked files are rejected; Cargo will not clone the engine.
 
-`use-prebuilt` is an explicit user-supplied acquisition mode. It is never enabled by default and requires all of `MNN_PREBUILT_URL` (HTTPS), `MNN_PREBUILT_SHA256` (64 hexadecimal digits), `MNN_PREBUILT_TARGET` (exactly the Cargo target triple), `MNN_PREBUILT_VERSION` (cache label), and `MNN_PREBUILT_CACHE_DIR`. The supplied gzip-compressed tar archive must contain `include/MNN/Interpreter.hpp` plus a root `lib/` containing a recognized library filename for the target and selected static/dynamic link mode. Its bytes are verified before extraction; traversal paths, links, and special archive entries are rejected. The crate does not publish or select artifact URLs or checksums.
+`use-prebuilt` is an explicit user-supplied acquisition mode. It is never enabled by default and requires all of `MNN_PREBUILT_URL` (HTTPS), `MNN_PREBUILT_SHA256` (64 hexadecimal digits), `MNN_PREBUILT_TARGET` (a user-asserted target label exactly matching Cargo `TARGET`), `MNN_PREBUILT_VERSION` (cache label), and `MNN_PREBUILT_CACHE_DIR`. The target value is not checked against the binary architecture or ABI. The supplied gzip-compressed tar archive must contain `include/MNN/Interpreter.hpp` plus a root `lib/` containing a recognized library filename for the target label and selected static/dynamic link mode. Its bytes are verified before extraction; traversal paths, links, and special archive entries are rejected. The checksum verifies bytes only, not publisher, provenance, license, or compatibility. Callers are responsible for provenance, license rights, and target/toolchain compatibility. The crate does not publish or select artifact URLs or checksums.
 
 ```bash
 export MNN_PREBUILT_URL=https://example.invalid/path/to/your-mnn.tar.gz
@@ -70,7 +70,7 @@ The example URL and checksum are placeholders and must not be copied literally. 
 | `MNN_INCLUDE_DIR` | Path to MNN headers |
 | `MNN_PREBUILT_URL` | User-supplied HTTPS archive URL; requires `use-prebuilt` |
 | `MNN_PREBUILT_SHA256` | Expected SHA-256 for the exact archive bytes |
-| `MNN_PREBUILT_TARGET` | Exact Cargo target triple associated with the artifact |
+| `MNN_PREBUILT_TARGET` | User assertion; must exactly match Cargo `TARGET`, but does not validate the binary architecture or ABI |
 | `MNN_PREBUILT_VERSION` | User-defined artifact version/cache label |
 | `MNN_PREBUILT_CACHE_DIR` | Required directory for downloaded and extracted files |
 | `MNN_DEBUG_BUILD` | Print debug info during build |

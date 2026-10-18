@@ -58,28 +58,28 @@ pub fn acquire(config: &PrebuiltConfig, static_link: bool) -> Result<(PathBuf, P
 fn contains_link_library(lib_dir: &Path, target: &str, static_link: bool) -> bool {
     let windows = target.contains("windows");
     let darwin = target.contains("apple") || target.contains("darwin");
-    let names: &[&str] = if windows {
-        if target.contains("gnu") {
-            if static_link {
+    if windows {
+        let (import_names, dll_names) = if target.contains("gnu") {
+            (
+                &["libMNN.dll.a", "libmnn.dll.a"][..],
+                &["MNN.dll", "mnn.dll"][..],
+            )
+        } else {
+            (&["MNN.lib", "mnn.lib"][..], &["MNN.dll", "mnn.dll"][..])
+        };
+        if static_link {
+            let static_names: &[&str] = if target.contains("gnu") {
                 &["libMNN.a", "libmnn.a"]
             } else {
-                &["libMNN.dll.a", "libmnn.dll.a"]
-            }
-        } else if static_link {
-            &["MNN.lib", "mnn.lib"]
-        } else if ["MNN.lib", "mnn.lib"]
-            .iter()
-            .any(|name| lib_dir.join(name).is_file())
-        {
-            // MSVC import libraries use the same .lib suffix as static
-            // archives, so require the accompanying DLL in dynamic mode.
-            return ["MNN.dll", "mnn.dll"]
-                .iter()
-                .any(|name| lib_dir.join(name).is_file());
-        } else {
-            &[]
+                &["MNN.lib", "mnn.lib"]
+            };
+            return static_names.iter().any(|name| lib_dir.join(name).is_file());
         }
-    } else if darwin {
+        let has_import = import_names.iter().any(|name| lib_dir.join(name).is_file());
+        let has_dll = dll_names.iter().any(|name| lib_dir.join(name).is_file());
+        return has_import && has_dll;
+    }
+    let names: &[&str] = if darwin {
         if static_link {
             &["libMNN.a", "libmnn.a"]
         } else {
@@ -357,6 +357,67 @@ mod tests {
         assert!(!contains_link_library(
             &lib_dir,
             "x86_64-unknown-linux-gnu",
+            false
+        ));
+        fs::remove_file(lib_dir.join("libMNN.a")).unwrap();
+
+        // GNU Windows static linking accepts an archive, not an import lib.
+        fs::write(lib_dir.join("libMNN.a"), b"static").unwrap();
+        assert!(contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-gnu",
+            true
+        ));
+        assert!(!contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-gnu",
+            false
+        ));
+        fs::remove_file(lib_dir.join("libMNN.a")).unwrap();
+
+        // GNU Windows dynamic linking requires both an import library and DLL.
+        fs::write(lib_dir.join("libMNN.dll.a"), b"import").unwrap();
+        assert!(!contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-gnu",
+            false
+        ));
+        fs::write(lib_dir.join("MNN.dll"), b"dll").unwrap();
+        assert!(contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-gnu",
+            false
+        ));
+        assert!(!contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-gnu",
+            true
+        ));
+        fs::remove_file(lib_dir.join("libMNN.dll.a")).unwrap();
+        fs::remove_file(lib_dir.join("MNN.dll")).unwrap();
+
+        // MSVC .lib names overlap, so dynamic mode also requires the DLL.
+        fs::write(lib_dir.join("MNN.lib"), b"lib").unwrap();
+        assert!(contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-msvc",
+            true
+        ));
+        assert!(!contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-msvc",
+            false
+        ));
+        fs::write(lib_dir.join("MNN.dll"), b"dll").unwrap();
+        assert!(contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-msvc",
+            false
+        ));
+        fs::remove_file(lib_dir.join("MNN.lib")).unwrap();
+        assert!(!contains_link_library(
+            &lib_dir,
+            "x86_64-pc-windows-msvc",
             false
         ));
         let _ = fs::remove_dir_all(lib_dir);
