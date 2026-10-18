@@ -238,7 +238,15 @@ impl ImageConfig {
 ///
 /// Represents a 3x3 matrix for 2D affine transformations including
 /// translation, scale, rotation, and skew.
-#[derive(Debug, Clone)]
+///
+/// `Matrix` owns its native allocation and therefore does not implement
+/// [`Clone`]. Use [`Matrix::try_clone`] to request an independent native copy.
+///
+/// ```compile_fail
+/// fn requires_clone<T: Clone>() {}
+/// requires_clone::<mnn_rs::Matrix>();
+/// ```
+#[derive(Debug)]
 pub struct Matrix {
     inner: *mut MNNMatrix,
 }
@@ -334,13 +342,15 @@ impl Matrix {
         }
     }
 
-    /// Create a clone of this matrix.
-    pub fn clone(&self) -> Matrix {
+    /// Create an independent native copy of this matrix.
+    ///
+    /// Returns `None` if MNN cannot allocate the copy.
+    pub fn try_clone(&self) -> Option<Matrix> {
         let inner = unsafe { mnn_matrix_clone(self.inner) };
         if inner.is_null() {
-            Matrix::identity()
+            None
         } else {
-            Self { inner }
+            Some(Self { inner })
         }
     }
 
