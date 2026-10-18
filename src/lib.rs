@@ -88,9 +88,10 @@ mod error;
 pub use error::{MnnError, MnnResult};
 
 mod backend;
+#[allow(deprecated)]
 pub use backend::{
-    available_backends, is_backend_available, version, BackendCapabilities, BackendConfig,
-    BackendType, DataType,
+    available_backends, is_backend_available, version, BackendAvailability, BackendCapabilities,
+    BackendConfig, BackendType, DataType,
 };
 
 mod config;
@@ -178,8 +179,9 @@ mod tests {
 
     #[test]
     fn test_available_backends() {
-        let backends = available_backends();
-        // CPU should always be available
-        assert!(backends.contains(&BackendType::CPU));
+        assert_eq!(
+            BackendType::CPU.availability(),
+            BackendAvailability::Available
+        );
     }
 }

@@ -26,10 +26,10 @@ fn test_version() {
 
 #[test]
 fn test_available_backends() {
-    let backends = mnn_rs::available_backends();
-    // CPU should always be available (even if not linked properly)
-    // At minimum, this tests that the function doesn't crash
-    println!("Available backends: {:?}", backends);
+    assert_eq!(
+        mnn_rs::BackendType::CPU.availability(),
+        mnn_rs::BackendAvailability::Available
+    );
 }
 
 #[test]

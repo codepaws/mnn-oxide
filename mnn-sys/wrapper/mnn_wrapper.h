@@ -91,7 +91,10 @@ const char* mnn_get_version(void);
  */
 const char* mnn_last_error(void);
 
-/** Check if a backend is available (0: not available, 1: available) */
+/**
+ * Legacy availability stub: returns 1 for CPU and 0 for other backends because
+ * native accelerator probing is not implemented. Zero does not confirm absence.
+ */
 int mnn_is_backend_available(int type);
 
 /* ============================================================================

@@ -18,13 +18,6 @@ fn main() -> Result<(), MnnError> {
 
     println!("Loading model from: {}", model_path);
 
-    // Check available backends
-    println!("\nAvailable backends:");
-    let backends = BackendType::available_backends();
-    for backend in &backends {
-        println!("  - {}", backend);
-    }
-
     // Select backend based on feature flags
     #[cfg(feature = "cuda")]
     let backend_type = BackendType::Cuda;
@@ -55,12 +48,18 @@ fn main() -> Result<(), MnnError> {
     ))]
     let backend_type = BackendType::CPU;
 
-    println!("\nUsing backend: {}", backend_type);
-
-    // Check if backend is available
-    if !backend_type.is_available() {
-        eprintln!("Warning: Backend {} is not available", backend_type);
-        println!("Falling back to CPU");
+    let availability = backend_type.availability();
+    println!("\nSelected backend: {} ({availability:?})", backend_type);
+    match availability {
+        mnn_rs::BackendAvailability::Unavailable => {
+            return Err(MnnError::backend_not_available(backend_type.name()));
+        }
+        mnn_rs::BackendAvailability::Unknown => {
+            println!(
+                "Native backend probing is not implemented; attempting the explicit selection without fallback."
+            );
+        }
+        mnn_rs::BackendAvailability::Available => {}
     }
 
     // Create interpreter
@@ -76,11 +75,8 @@ fn main() -> Result<(), MnnError> {
     println!("Session created with {} backend", backend_type);
 
     // Get input info
-    let input_names = session.get_input_names()?;
-    if let Some(first_input) = input_names.first() {
-        let input = session.get_input(Some(first_input))?;
-        println!("Input '{}' shape: {:?}", first_input, input.shape());
-    }
+    let input = session.get_input(None)?;
+    println!("Input shape: {:?}", input.shape());
 
     // Run inference
     println!("\nRunning inference...");
@@ -90,11 +86,8 @@ fn main() -> Result<(), MnnError> {
     println!("Inference completed in {:?}", elapsed);
 
     // Get output
-    let output_names = session.get_output_names()?;
-    if let Some(first_output) = output_names.first() {
-        let output = session.get_output(Some(first_output))?;
-        println!("Output '{}' shape: {:?}", first_output, output.shape());
-    }
+    let output = session.get_output(None)?;
+    println!("Output shape: {:?}", output.shape());
 
     // Print stats
     println!("\nSession stats:");

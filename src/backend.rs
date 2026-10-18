@@ -93,47 +93,53 @@ impl BackendType {
         }
     }
 
+    /// Report whether this backend is known to be available on the current system.
+    ///
+    /// CPU is reported as [`BackendAvailability::Available`] by the current API
+    /// contract. Accelerator probing is not implemented yet, so CUDA, OpenCL,
+    /// Vulkan, Metal, and automatic selection return [`BackendAvailability::Unknown`].
+    /// Cargo features only control which
+    /// backend variants can be configured; they do not prove native support,
+    /// driver availability, device presence, or successful execution.
+    pub fn availability(&self) -> BackendAvailability {
+        match self {
+            BackendType::CPU => BackendAvailability::Available,
+            #[cfg(feature = "cuda")]
+            BackendType::Cuda => BackendAvailability::Unknown,
+            #[cfg(feature = "opencl")]
+            BackendType::OpenCL => BackendAvailability::Unknown,
+            #[cfg(feature = "vulkan")]
+            BackendType::Vulkan => BackendAvailability::Unknown,
+            #[cfg(feature = "metal")]
+            BackendType::Metal => BackendAvailability::Unknown,
+            BackendType::Auto => BackendAvailability::Unknown,
+        }
+    }
+
     /// Check if this backend is available on the current system.
+    ///
+    /// This legacy boolean API cannot distinguish an unavailable backend from one
+    /// whose availability has not been checked. Prefer [`BackendType::availability`].
+    /// Accelerator backends currently return `false` because probing is unsupported;
+    /// that result must not be interpreted as proof that the backend is unavailable.
+    #[deprecated(note = "use availability() to distinguish unknown from unavailable")]
     pub fn is_available(&self) -> bool {
-        unsafe { mnn_rs_sys::mnn_is_backend_available(self.to_mnn_type()) != 0 }
+        self.availability() == BackendAvailability::Available
     }
 
     /// Get all available backends on this system.
+    ///
+    /// This legacy API returns only backends confirmed available. Since accelerator
+    /// probing is currently unsupported, it currently returns CPU only. It does not
+    /// mean that accelerator backends are confirmed unavailable. Cargo features do
+    /// not establish runtime availability. Prefer querying [`BackendType::availability`]
+    /// when unknown status matters.
+    #[deprecated(note = "accelerator probing is unsupported; use BackendType::availability")]
     pub fn available_backends() -> Vec<BackendType> {
-        let mut backends = Vec::new();
-
-        // CPU is always available
-        backends.push(BackendType::CPU);
-
-        #[cfg(feature = "cuda")]
-        {
-            if BackendType::Cuda.is_available() {
-                backends.push(BackendType::Cuda);
-            }
-        }
-
-        #[cfg(feature = "opencl")]
-        {
-            if BackendType::OpenCL.is_available() {
-                backends.push(BackendType::OpenCL);
-            }
-        }
-
-        #[cfg(feature = "vulkan")]
-        {
-            if BackendType::Vulkan.is_available() {
-                backends.push(BackendType::Vulkan);
-            }
-        }
-
-        #[cfg(feature = "metal")]
-        {
-            if BackendType::Metal.is_available() {
-                backends.push(BackendType::Metal);
-            }
-        }
-
-        backends
+        [BackendType::CPU]
+            .into_iter()
+            .filter(|backend| backend.availability() == BackendAvailability::Available)
+            .collect()
     }
 }
 
@@ -144,39 +150,78 @@ impl std::fmt::Display for BackendType {
 }
 
 /// Get list of available backends on this system.
+///
+/// This legacy API returns only backends confirmed available. Accelerator probing
+/// is currently unsupported, so the result currently contains CPU only and does
+/// not mean accelerators were confirmed unavailable. Cargo features do not prove
+/// native runtime availability. Prefer [`BackendType::availability`] when unknown
+/// status matters.
+#[deprecated(note = "accelerator probing is unsupported; use BackendType::availability")]
+#[allow(deprecated)]
 pub fn available_backends() -> Vec<BackendType> {
     BackendType::available_backends()
 }
 
 /// Check if a specific backend is available.
+///
+/// This legacy boolean API cannot distinguish unavailable from unknown. Accelerator
+/// probing is currently unsupported, so accelerator values return `false` without
+/// establishing that those backends are absent. Prefer [`BackendType::availability`].
+#[deprecated(note = "use BackendType::availability to distinguish unknown")]
 pub fn is_backend_available(backend: BackendType) -> bool {
-    backend.is_available()
+    backend.availability() == BackendAvailability::Available
+}
+
+/// Result of checking whether a backend is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackendAvailability {
+    /// The runtime explicitly confirmed that the backend is available.
+    Available,
+    /// The runtime explicitly confirmed that the backend is unavailable.
+    Unavailable,
+    /// The backend has not been probed, or no reliable probe is implemented.
+    Unknown,
 }
 
 /// Backend capabilities.
+///
+/// This legacy snapshot cannot represent unknown values and is deprecated. Its
+/// [`BackendCapabilities::query`] method returns conservative placeholders: zero
+/// dimensions and false feature flags mean “not established”, not “unsupported”.
+#[deprecated(
+    note = "query() cannot represent unknown capabilities; do not use for runtime decisions"
+)]
 #[derive(Debug, Clone, Copy)]
 pub struct BackendCapabilities {
-    /// Maximum supported tensor dimensions
+    /// Maximum supported tensor dimensions, or zero when unknown.
     pub max_tensor_dimensions: i32,
 
-    /// Supports FP16 operations
+    /// Whether FP16 is confirmed; false also represents unknown.
     pub supports_fp16: bool,
 
-    /// Supports INT8 operations
+    /// Whether INT8 is confirmed; false also represents unknown.
     pub supports_int8: bool,
 
-    /// Supports BF16 operations
+    /// Whether BF16 is confirmed; false also represents unknown.
     pub supports_bf16: bool,
 }
 
+#[allow(deprecated)]
 impl BackendCapabilities {
-    /// Query capabilities for a specific backend.
+    /// Return an unverified capability placeholder for compatibility.
+    ///
+    /// No capability probe is currently implemented. The returned zero and false
+    /// values do not assert that the backend lacks those capabilities. This method
+    /// no longer derives native capability claims from Cargo features.
+    #[deprecated(
+        note = "capability probing is unsupported; returned values are unknown placeholders"
+    )]
     pub fn query(_backend: BackendType) -> Self {
         Self {
-            max_tensor_dimensions: 8,
-            supports_fp16: cfg!(feature = "fp16"),
-            supports_int8: cfg!(feature = "int8"),
-            supports_bf16: cfg!(feature = "bf16"),
+            max_tensor_dimensions: 0,
+            supports_fp16: false,
+            supports_int8: false,
+            supports_bf16: false,
         }
     }
 }
@@ -421,6 +466,68 @@ mod tests {
     fn test_backend_type_name() {
         assert_eq!(BackendType::CPU.name(), "CPU");
         assert_eq!(BackendType::Auto.name(), "Auto");
+    }
+
+    #[test]
+    fn cpu_availability_is_confirmed() {
+        assert_eq!(
+            BackendType::CPU.availability(),
+            BackendAvailability::Available
+        );
+    }
+
+    #[test]
+    fn auto_backend_availability_is_unknown() {
+        assert_eq!(
+            BackendType::Auto.availability(),
+            BackendAvailability::Unknown
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_availability_is_unknown_without_native_probe() {
+        assert_eq!(
+            BackendType::Cuda.availability(),
+            BackendAvailability::Unknown
+        );
+    }
+
+    #[cfg(feature = "opencl")]
+    #[test]
+    fn opencl_availability_is_unknown_without_native_probe() {
+        assert_eq!(
+            BackendType::OpenCL.availability(),
+            BackendAvailability::Unknown
+        );
+    }
+
+    #[cfg(feature = "vulkan")]
+    #[test]
+    fn vulkan_availability_is_unknown_without_native_probe() {
+        assert_eq!(
+            BackendType::Vulkan.availability(),
+            BackendAvailability::Unknown
+        );
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    fn metal_availability_is_unknown_without_native_probe() {
+        assert_eq!(
+            BackendType::Metal.availability(),
+            BackendAvailability::Unknown
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_capability_query_does_not_claim_native_support() {
+        let capabilities = BackendCapabilities::query(BackendType::CPU);
+        assert_eq!(capabilities.max_tensor_dimensions, 0);
+        assert!(!capabilities.supports_fp16);
+        assert!(!capabilities.supports_int8);
+        assert!(!capabilities.supports_bf16);
     }
 
     #[test]

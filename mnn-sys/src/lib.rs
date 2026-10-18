@@ -148,7 +148,10 @@ extern "C" {
     /// The pointer is valid until the next guarded wrapper call.
     pub fn mnn_last_error() -> *const c_char;
 
-    /// Check if a backend is available
+    /// Legacy availability stub: returns 1 for CPU and 0 for other backend
+    /// types because native accelerator probing is not implemented. A zero
+    /// result does not confirm that a backend is unavailable.
+    #[deprecated(note = "non-CPU availability is unprobed; use mnn-rs BackendAvailability")]
     pub fn mnn_is_backend_available(type_: c_int) -> c_int;
 
     // ========================================================================

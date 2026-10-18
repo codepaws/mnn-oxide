@@ -1,7 +1,5 @@
 # mnn-rs
 
-[![Crates.io](https://img.shields.io/crates/v/mnn-rs.svg)](https://crates.io/crates/mnn-rs)
-[![Documentation](https://docs.rs/mnn-rs/badge.svg)](https://docs.rs/mnn-rs)
 [![License](https://img.shields.io/crates/l/mnn-rs.svg)](https://github.com/codepaws/mnn-rs#license)
 
 Rust bindings for [MNN](https://github.com/alibaba/MNN) (Mobile Neural Network), Alibaba's efficient and lightweight deep learning inference framework.
@@ -52,7 +50,7 @@ set MNN_INCLUDE_DIR=C:\path\to\mnn\include
 cargo build --no-default-features --features cpu,dynamic,system-mnn
 ```
 
-Prebuilt acquisition is opt-in and accepts only an artifact you supply: Cargo downloads it only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain `include/MNN/Interpreter.hpp`, a root `lib/` directory with the selected link-mode library, and a root `mnn-rs-artifact.json` manifest. The manifest declares schema version, MNN version, target triple, link mode, backends, optional modules, and archive-relative license/notice files. The build rejects target or link-mode mismatches, missing required Cargo-feature declarations, and missing named notice files. These manifest values are publisher declarations, not verified binary facts: the binary architecture, ABI, MNN version, and feature contents are not inspected. SHA-256 verifies archive bytes, not publisher, provenance, license validity, or compatibility. You are responsible for confirming the artifact's provenance, license rights, and compatibility with your toolchain and runtime. This project does not publish or select a prebuilt MNN artifact. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Dynamic linking is selected by default; static linking requires disabling defaults and selecting `static` explicitly.
+Prebuilt acquisition is opt-in and accepts only an artifact you supply: Cargo downloads it only when `use-prebuilt` is enabled and all required `MNN_PREBUILT_*` settings are provided. The gzip-compressed tar must contain the wrapper-required public headers (MNN/Interpreter.hpp, MNN/MNNDefine.h, MNN/MNNForwardType.h, MNN/Tensor.hpp, MNN/ImageProcess.hpp, and MNN/Matrix.h, plus feature-specific headers for LLM, modules, and runtime sharing), a root `lib/` directory with the selected link-mode library, and a root `mnn-rs-artifact.json` manifest. The manifest declares schema version, MNN version, target triple, link mode, backends, optional modules, and archive-relative license/notice files. The build rejects target or link-mode mismatches, missing required Cargo-feature declarations, and missing named notice files. These manifest values are publisher declarations, not verified binary facts: the binary architecture, ABI, MNN version, and feature contents are not inspected. SHA-256 verifies archive bytes, not publisher, provenance, license validity, or compatibility. You are responsible for confirming the artifact's provenance, license rights, and compatibility with your toolchain and runtime. This project does not publish or select a prebuilt MNN artifact. Ordinary Cargo commands never download MNN. Source builds require an existing clean MNN checkout, `MNN_SOURCE_PATH`, and `MNN_SOURCE_VERSION` set to that checkout's full 40-character commit SHA; modified or untracked files are rejected, and Cargo does not clone it. Dynamic linking is selected by default; static linking requires disabling defaults and selecting `static` explicitly.
 
 To use a user-supplied prebuilt archive, set all five variables below. `MNN_PREBUILT_TARGET` must exactly match Cargo's target triple (for example, `x86_64-unknown-linux-gnu`), but it is not a binary architecture check; `MNN_PREBUILT_VERSION` is a cache label chosen by you. The cache stores the verified archive and re-extracts it safely on each build. Archive symlinks, hard links, special files, and paths escaping the archive root are rejected.
 
@@ -170,6 +168,8 @@ fn main() -> Result<(), mnn_rs::MnnError> {
 | `opencl` | OpenCL GPU backend | Windows, Linux, macOS, Android |
 | `vulkan` | Vulkan GPU backend | Windows, Linux, Android |
 | `metal` | Metal GPU backend | macOS, iOS |
+
+These Cargo features let the API represent and request a backend; they do not prove that the selected MNN library contains it or that the host has a working driver or device. The current safe API reports accelerator availability as unknown because native probing is not implemented. A successfully created session and correct inference are separate acceptance checks.
 
 ### Precision Support
 

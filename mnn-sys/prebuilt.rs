@@ -62,8 +62,41 @@ pub fn validate_extracted_archive(
             "prebuilt archive must contain include/ and lib/ directories at its root".into(),
         );
     }
-    if !include.join("MNN").join("Interpreter.hpp").is_file() {
-        return Err("prebuilt include/ must contain MNN/Interpreter.hpp".into());
+    let mut required_headers = vec![
+        "MNN/Interpreter.hpp",
+        "MNN/MNNDefine.h",
+        "MNN/MNNForwardType.h",
+        "MNN/Tensor.hpp",
+        "MNN/ImageProcess.hpp",
+        "MNN/Matrix.h",
+    ];
+    if requirements
+        .optional_modules
+        .iter()
+        .any(|module| module == "llm")
+    {
+        required_headers.push("llm/llm.hpp");
+    }
+    if requirements
+        .optional_modules
+        .iter()
+        .any(|module| module == "module")
+    {
+        required_headers.push("MNN/expr/Module.hpp");
+        required_headers.push("MNN/expr/Expr.hpp");
+        required_headers.push("MNN/expr/Executor.hpp");
+    }
+    if requirements
+        .optional_modules
+        .iter()
+        .any(|module| module == "runtime")
+    {
+        required_headers.push("MNN/expr/Executor.hpp");
+    }
+    for header in required_headers {
+        if !include.join(header).is_file() {
+            return Err(format!("prebuilt include/ must contain {header}"));
+        }
     }
     if !contains_link_library(
         &library,
@@ -578,6 +611,12 @@ mod tests {
             &archive,
             &[
                 ("include/MNN/Interpreter.hpp", tar::EntryType::Regular, b"header"),
+                ("include/MNN/MNNDefine.h", tar::EntryType::Regular, b"header"),
+                ("include/MNN/MNNForwardType.h", tar::EntryType::Regular, b"header"),
+                ("include/MNN/Tensor.hpp", tar::EntryType::Regular, b"header"),
+                ("include/MNN/ImageProcess.hpp", tar::EntryType::Regular, b"header"),
+                ("include/MNN/Matrix.h", tar::EntryType::Regular, b"header"),
+                ("include/llm/llm.hpp", tar::EntryType::Regular, b"header"),
                 ("lib/libMNN.a", tar::EntryType::Regular, b"library"),
                 ("LICENSE-MNN", tar::EntryType::Regular, b"notice"),
                 (
@@ -598,6 +637,66 @@ mod tests {
         );
         let _ = fs::remove_file(archive);
         let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn prebuilt_requires_headers_used_by_enabled_wrappers() {
+        let root = temp_path("required-headers");
+        fs::create_dir_all(root.join("include/MNN")).unwrap();
+        fs::create_dir_all(root.join("include/llm")).unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        for header in [
+            "MNN/Interpreter.hpp",
+            "MNN/MNNDefine.h",
+            "MNN/MNNForwardType.h",
+            "MNN/Tensor.hpp",
+            "MNN/ImageProcess.hpp",
+            "MNN/Matrix.h",
+            "llm/llm.hpp",
+        ] {
+            fs::write(root.join("include").join(header), b"header").unwrap();
+        }
+        fs::write(root.join("lib/libMNN.a"), b"library").unwrap();
+        write_manifest(
+            &root,
+            r#"{
+                "schema_version": 1,
+                "mnn_version": "3.6.1",
+                "target": "x86_64-unknown-linux-gnu",
+                "link_mode": "static",
+                "backends": ["cpu"],
+                "optional_modules": ["llm", "module"],
+                "notice_files": ["LICENSE-MNN"]
+            }"#,
+        );
+        assert!(validate_extracted_archive(&root, &test_requirements()).is_ok());
+
+        fs::remove_file(root.join("include/llm/llm.hpp")).unwrap();
+        assert!(validate_extracted_archive(&root, &test_requirements())
+            .unwrap_err()
+            .contains("include/ must contain llm/llm.hpp"));
+
+        fs::remove_file(root.join("include/MNN/Tensor.hpp")).unwrap();
+        let mut without_llm = test_requirements();
+        without_llm.optional_modules.clear();
+        assert!(validate_extracted_archive(&root, &without_llm)
+            .unwrap_err()
+            .contains("include/ must contain MNN/Tensor.hpp"));
+
+        fs::write(root.join("include/MNN/Tensor.hpp"), b"header").unwrap();
+        fs::create_dir_all(root.join("include/MNN/expr")).unwrap();
+        for header in ["Module.hpp", "Expr.hpp", "Executor.hpp"] {
+            fs::write(root.join("include/MNN/expr").join(header), b"header").unwrap();
+        }
+        let mut with_module = without_llm;
+        with_module.optional_modules.push("module".into());
+        assert!(validate_extracted_archive(&root, &with_module).is_ok());
+
+        fs::remove_file(root.join("include/MNN/expr/Expr.hpp")).unwrap();
+        assert!(validate_extracted_archive(&root, &with_module)
+            .unwrap_err()
+            .contains("include/ must contain MNN/expr/Expr.hpp"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
