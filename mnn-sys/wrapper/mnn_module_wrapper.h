@@ -112,6 +112,10 @@ MNNVar* mnn_module_forward(MNNModule* module, const MNNVar* input);
  * @param output_count Number of outputs
  * @return Output variables array (caller must free)
  */
+/**
+ * Run the module and return an owned array of owned variables. The caller
+ * must release it with mnn_var_array_free(), passing the returned count.
+ */
 MNNVar** mnn_module_forward_multi(MNNModule* module,
                                    const MNNVar** inputs, int input_count,
                                    int* output_count);
@@ -122,6 +126,7 @@ void mnn_var_array_free(MNNVar** vars, int count);
 int mnn_module_get_parameter_count(const MNNModule* module);
 
 /** Get module parameters */
+/** Return an owned array of owned variables; release it with mnn_var_array_free(). */
 MNNVar** mnn_module_get_parameters(const MNNModule* module, int* count);
 
 /** Set training mode */
@@ -220,6 +225,7 @@ MNNVar* mnn_var_transpose(const MNNVar* var, const int* perm, int dim_count);
 MNNVar* mnn_var_concat(const MNNVar** vars, int var_count, int axis);
 
 /** Variable split */
+/** Return an owned array of owned variables; release it with mnn_var_array_free(). */
 MNNVar** mnn_var_split(const MNNVar* var, int splits, int axis, int* output_count);
 
 #ifdef __cplusplus
