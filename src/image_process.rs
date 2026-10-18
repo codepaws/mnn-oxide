@@ -344,13 +344,23 @@ impl Matrix {
 
     /// Create an independent native copy of this matrix.
     ///
-    /// Returns `None` if MNN cannot allocate the copy.
-    pub fn try_clone(&self) -> Option<Matrix> {
+    /// Returns an error if MNN cannot allocate the copy.
+    pub fn try_clone(&self) -> MnnResult<Matrix> {
         let inner = unsafe { mnn_matrix_clone(self.inner) };
+        unsafe { Self::from_owned_ptr(inner) }
+    }
+
+    /// Convert a returned native pointer into an owned Matrix.
+    ///
+    /// # Safety
+    /// A non-null pointer must be a valid MNNMatrix allocation owned by caller.
+    unsafe fn from_owned_ptr(inner: *mut MNNMatrix) -> MnnResult<Self> {
         if inner.is_null() {
-            None
+            Err(MnnError::internal(
+                "Failed to clone matrix (MNN matrix clone returned null)",
+            ))
         } else {
-            Some(Self { inner })
+            Ok(Self { inner })
         }
     }
 
@@ -686,6 +696,18 @@ impl std::fmt::Debug for ImageProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matrix_clone_null_pointer_returns_actionable_error() {
+        let result = unsafe { Matrix::from_owned_ptr(std::ptr::null_mut()) };
+        match result {
+            Err(MnnError::Internal(message)) => {
+                assert!(message.contains("Failed to clone matrix"));
+                assert!(message.contains("returned null"));
+            }
+            _ => panic!("expected an internal error for a null matrix pointer"),
+        }
+    }
 
     #[test]
     fn test_image_format_conversion() {
