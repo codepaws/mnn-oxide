@@ -100,8 +100,11 @@ protected:
 
     virtual int overflow(int c) override {
         if (mCb != nullptr && c != traits_type::eof()) {
-            char ch = static_cast<char>(c);
-            mCb(&ch, mUserdata);
+            // The callback consumes a C string, so the single-character
+            // streambuf path must provide the same terminated lifetime as
+            // xsputn above.
+            const std::string chunk(1, static_cast<char>(c));
+            mCb(chunk.c_str(), mUserdata);
         }
         return c;
     }
