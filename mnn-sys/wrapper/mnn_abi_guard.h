@@ -11,28 +11,35 @@
 
 namespace mnn_rs_abi {
 
-inline thread_local std::string last_error;
-inline thread_local bool last_error_unavailable = false;
+inline std::string& last_error() {
+    static thread_local std::string value;
+    return value;
+}
+
+inline bool& last_error_unavailable() {
+    static thread_local bool value = false;
+    return value;
+}
 
 inline void clear_error() noexcept {
-    last_error.clear();
-    last_error_unavailable = false;
+    last_error().clear();
+    last_error_unavailable() = false;
 }
 
 inline void record_error(const char* message) noexcept {
     try {
-        last_error.assign(message != nullptr ? message : "unknown C++ exception");
+        last_error().assign(message != nullptr ? message : "unknown C++ exception");
     } catch (...) {
-        last_error.clear();
-        last_error_unavailable = true;
+        last_error().clear();
+        last_error_unavailable() = true;
     }
 }
 
 inline const char* error_message() noexcept {
-    if (last_error_unavailable) {
+    if (last_error_unavailable()) {
         return "native operation failed; error detail could not be retained";
     }
-    return last_error.empty() ? nullptr : last_error.c_str();
+    return last_error().empty() ? nullptr : last_error().c_str();
 }
 
 template <typename Result, typename Function>
