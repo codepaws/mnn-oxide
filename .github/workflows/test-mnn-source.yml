@@ -186,16 +186,26 @@ jobs:
               temporary.replace(destination)
           print(f'Using verified inference model: {destination}')
 
-      - name: Run tests (classification + LLM)
+      - name: Run tests (integration + LLM)
         # Source-build MNN with the LLM module enabled. `--include-ignored`
         # also runs model-dependent inference tests using the verified model
-        # downloaded above.
+        # downloaded above. Keep doctests separate so this option cannot force
+        # intentionally ignored snippets that need a user-supplied model or
+        # optional features to run.
         shell: bash
         env:
           MNN_TEST_MODEL: target/test-models/PP-LCNet_x1_0_textline_ori.mnn
         run: |
-          cargo test --target ${{ matrix.target }} --no-default-features \
+          cargo test --tests --target ${{ matrix.target }} --no-default-features \
             --features cpu,static,llm,build-from-source -- --include-ignored
+
+      - name: Run documentation tests
+        # Run normal documentation tests without including snippets explicitly
+        # marked `ignore` because they need external model files or features.
+        shell: bash
+        run: |
+          cargo test --doc --target ${{ matrix.target }} --no-default-features \
+            --features cpu,static,llm,build-from-source
 
       - name: Run LLM streaming example
         # Real streaming generation against the downloaded model. This is the
