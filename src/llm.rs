@@ -29,7 +29,7 @@
 //! both wrappers are designed for single-threaded exclusive use (they are
 //! `!Send` and `!Sync`). For concurrent sessions, create multiple instances.
 
-use crate::error::{MnnError, MnnResult};
+use crate::error::{native_error, MnnError, MnnResult};
 use crate::llm_callback::{stream_callback, CallbackState};
 use mnn_rs_sys::{MNNEmbedding, MNNLlm, MNNLlmContext};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -144,9 +144,10 @@ impl Llm {
         // SAFETY: `c_path` is a valid NUL-terminated string for the call.
         let inner = unsafe { mnn_rs_sys::mnn_llm_create(c_path.as_ptr()) };
         if inner.is_null() {
-            return Err(MnnError::invalid_model(format!(
-                "Failed to create LLM from config: {path_str}"
-            )));
+            return Err(native_error(
+                "Failed to create LLM",
+                MnnError::invalid_model(format!("Failed to create LLM from config: {path_str}")),
+            ));
         }
         Ok(Self {
             inner,
@@ -262,9 +263,10 @@ impl Llm {
                 )
             };
             if ret < 0 {
-                return Err(MnnError::internal(format!(
-                    "LLM token generation failed with code {ret}"
-                )));
+                return Err(native_error(
+                    "LLM token generation failed",
+                    MnnError::internal(format!("LLM token generation failed with code {ret}")),
+                ));
             }
             let count = out_n as usize;
             if count <= capacity {
@@ -345,7 +347,10 @@ impl Llm {
             mnn_rs_sys::mnn_llm_tokenizer_encode(self.inner, c_text.as_ptr(), &mut out_n)
         };
         if ptr.is_null() {
-            return Err(MnnError::internal("LLM tokenizer encode failed"));
+            return Err(native_error(
+                "LLM tokenizer encode failed",
+                MnnError::internal("LLM tokenizer encode failed"),
+            ));
         }
         // SAFETY: the wrapper malloc'd `out_n` ints; ownership is transferred
         // to `read_int_array`, which frees it exactly once.
@@ -428,8 +433,9 @@ impl Llm {
         // SAFETY: `ctx` is a valid, initialized `MNNLlmContext` buffer.
         let ret = unsafe { mnn_rs_sys::mnn_llm_get_context(self.inner, &mut ctx) };
         if ret != 0 {
-            return Err(MnnError::internal(
-                "Failed to read LLM context (model not loaded?)",
+            return Err(native_error(
+                "Failed to read LLM context",
+                MnnError::internal("Failed to read LLM context (model not loaded?)"),
             ));
         }
         Ok(LlmPerformance {
@@ -488,9 +494,12 @@ impl Embedding {
         // SAFETY: `c_path` is a valid NUL-terminated string for the call.
         let inner = unsafe { mnn_rs_sys::mnn_embedding_create(c_path.as_ptr(), load) };
         if inner.is_null() {
-            return Err(MnnError::invalid_model(format!(
-                "Failed to create embedding model from config: {path_str}"
-            )));
+            return Err(native_error(
+                "Failed to create embedding model",
+                MnnError::invalid_model(format!(
+                    "Failed to create embedding model from config: {path_str}"
+                )),
+            ));
         }
         Ok(Self {
             inner,
@@ -532,9 +541,10 @@ impl Embedding {
             )
         };
         if count < 0 {
-            return Err(MnnError::internal(format!(
-                "Embedding text failed with code {count}"
-            )));
+            return Err(native_error(
+                "Embedding text failed",
+                MnnError::internal(format!("Embedding text failed with code {count}")),
+            ));
         }
         out.truncate((count as usize).min(dim));
         Ok(out)
@@ -561,9 +571,10 @@ impl Embedding {
             )
         };
         if count < 0 {
-            return Err(MnnError::internal(format!(
-                "Embedding ids failed with code {count}"
-            )));
+            return Err(native_error(
+                "Embedding ids failed",
+                MnnError::internal(format!("Embedding ids failed with code {count}")),
+            ));
         }
         out.truncate((count as usize).min(dim));
         Ok(out)
@@ -619,7 +630,7 @@ fn check_bool(ok: bool, context: &str) -> MnnResult<()> {
     if ok {
         Ok(())
     } else {
-        Err(MnnError::internal(context))
+        Err(native_error(context, MnnError::internal(context)))
     }
 }
 
@@ -630,7 +641,10 @@ fn check_bool(ok: bool, context: &str) -> MnnResult<()> {
 /// with `strdup`), and must be freed exactly once.
 unsafe fn read_c_string(ptr: *mut c_char) -> MnnResult<String> {
     if ptr.is_null() {
-        return Err(MnnError::internal("LLM returned a null string"));
+        return Err(native_error(
+            "LLM returned a null string",
+            MnnError::internal("LLM returned a null string"),
+        ));
     }
     // SAFETY: the caller guarantees `ptr` is a valid NUL-terminated string.
     let text = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
