@@ -391,9 +391,16 @@ cargo build --target x86_64-pc-windows-gnu --no-default-features --features cpu,
 | `MNN_DEBUG_BUILD` | Print debug information during build |
 | `MNN_MSVC_RUNTIME` | Select MSVC C runtime for the source-built MNN library and C++ wrapper: `MT` (static CRT) or `MD` (dynamic CRT). Defaults to `/MT` for static MNN linking and `/MD` for dynamic MNN linking |
 | `CUDA_PATH` | CUDA installation path |
+| `MNN_CUDA_ARCHS` | Optional CMake CUDA architecture list for source builds (for example `12.0` or `8.6;8.9`) |
+| `MNN_CUDA_NATIVE_ARCH` | Optional MNN CUDA native-architecture mode (`ON`/`OFF`); useful with `MNN_CUDA_ARCHS` to avoid compiling MNN's default legacy architecture list |
 | `MNN_OPENCL_LIB_DIR` | Optional Windows path containing `OpenCL.lib` when the OpenCL import library is outside the CUDA toolkit or Windows SDK paths |
 | `ANDROID_NDK_HOME` | Android NDK installation path |
 | `NDK_HOME` | Android NDK installation path (alternative to `ANDROID_NDK_HOME`) |
+
+For source-built CUDA with a newer toolkit, MNN's default architecture list may
+include targets that the installed `nvcc` no longer supports. Set both
+`MNN_CUDA_ARCHS` and `MNN_CUDA_NATIVE_ARCH=ON` to build only a supported target
+(for example, `12.0` with MNN revisions that include SM 120 support).
 
 ## API Documentation
 

@@ -496,6 +496,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MNN_CMAKE_GENERATOR");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=MNN_OPENCL_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=MNN_CUDA_ARCHS");
+    println!("cargo:rerun-if-env-changed=MNN_CUDA_NATIVE_ARCH");
     println!("cargo:rerun-if-env-changed=ANDROID_NDK_HOME");
     println!("cargo:rerun-if-env-changed=NDK_HOME");
 
@@ -996,6 +998,12 @@ fn build_mnn_from_source(
     // Backend options
     if cfg!(feature = "cuda") {
         cmake_args.push("-DMNN_CUDA=ON".to_string());
+        let cuda_args = build_config::cuda_build_args(
+            env::var("MNN_CUDA_ARCHS").ok().as_deref(),
+            env::var("MNN_CUDA_NATIVE_ARCH").ok().as_deref(),
+        )
+        .unwrap_or_else(|error| panic!("MNN CUDA build configuration error: {error}"));
+        cmake_args.extend(cuda_args);
     }
     if cfg!(feature = "opencl") {
         cmake_args.push("-DMNN_OPENCL=ON".to_string());

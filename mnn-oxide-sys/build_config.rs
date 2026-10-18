@@ -183,6 +183,44 @@ pub fn opencl_import_library_exists(directory: &std::path::Path) -> bool {
     directory.join("OpenCL.lib").is_file()
 }
 
+/// Convert optional CUDA architecture overrides into validated CMake arguments.
+pub fn cuda_build_args(
+    architectures: Option<&str>,
+    native_arch: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if let Some(architectures) = architectures {
+        let architectures = architectures.trim();
+        if architectures.is_empty()
+            || !architectures
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".;,+ \t".contains(&byte))
+        {
+            return Err(
+                "MNN_CUDA_ARCHS must be a non-empty CUDA architecture list (for example `12.0` or `8.6;8.9`)".into(),
+            );
+        }
+        args.push(format!("-DCUDA_ARCHS={architectures}"));
+    }
+
+    if let Some(native_arch) = native_arch {
+        let enabled = match native_arch.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" => true,
+            "0" | "false" | "off" | "no" => false,
+            _ => return Err(
+                "MNN_CUDA_NATIVE_ARCH must be a boolean value: ON/OFF, true/false, yes/no, or 1/0"
+                    .into(),
+            ),
+        };
+        args.push(format!(
+            "-DMNN_CUDA_NATIVE_ARCH={}",
+            if enabled { "ON" } else { "OFF" }
+        ));
+    }
+
+    Ok(args)
+}
+
 /// Keep MNN's public symbols in one library for the wrapper's single-link contract.
 pub fn source_build_layout_args() -> [&'static str; 1] {
     ["-DMNN_SEP_BUILD=OFF"]
@@ -260,6 +298,31 @@ mod tests {
         );
         assert!(validate_acquisition(true, false, true, false, false).is_err());
         assert!(validate_acquisition(true, false, false, true, true).is_err());
+    }
+
+    #[test]
+    fn cuda_build_overrides_emit_target_architecture_and_native_arch_mode() {
+        assert_eq!(
+            cuda_build_args(Some("12.0"), Some("true")),
+            Ok(vec![
+                "-DCUDA_ARCHS=12.0".to_string(),
+                "-DMNN_CUDA_NATIVE_ARCH=ON".to_string(),
+            ])
+        );
+        assert_eq!(
+            cuda_build_args(Some("8.6;8.9"), Some("OFF")),
+            Ok(vec![
+                "-DCUDA_ARCHS=8.6;8.9".to_string(),
+                "-DMNN_CUDA_NATIVE_ARCH=OFF".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn cuda_build_overrides_reject_empty_or_untrusted_values() {
+        assert!(cuda_build_args(Some("  "), None).is_err());
+        assert!(cuda_build_args(Some("12.0 -DUNSAFE=ON"), None).is_err());
+        assert!(cuda_build_args(None, Some("sometimes")).is_err());
     }
 
     #[test]
