@@ -84,6 +84,13 @@ typedef int MNNErrorCodeWrapper;
 /** Get MNN version string */
 const char* mnn_get_version(void);
 
+/**
+ * Get the last C++ exception captured by a wrapper call on the current thread.
+ * Returns NULL if the previous guarded call succeeded. The pointer remains
+ * valid until the next guarded wrapper call on this thread.
+ */
+const char* mnn_last_error(void);
+
 /** Check if a backend is available (0: not available, 1: available) */
 int mnn_is_backend_available(int type);
 

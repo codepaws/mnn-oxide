@@ -4,7 +4,7 @@
 //! Sessions are created from interpreters and are used to run inference.
 
 use crate::config::ScheduleConfig;
-use crate::error::{MnnError, MnnResult};
+use crate::error::{native_error, MnnError, MnnResult};
 use crate::interpreter::InterpreterHandle;
 use crate::tensor::Tensor;
 use mnn_rs_sys::MNNSession;
@@ -65,7 +65,10 @@ impl Session {
         };
 
         if inner.is_null() {
-            return Err(MnnError::session_error("Failed to create session"));
+            return Err(native_error(
+                "Failed to create session",
+                MnnError::session_error("Failed to create session"),
+            ));
         }
 
         Ok(Self {
@@ -102,10 +105,11 @@ impl Session {
             );
 
             if tensor_ptr.is_null() {
-                return Err(MnnError::tensor_error(match name {
+                let fallback = MnnError::tensor_error(match name {
                     Some(n) => format!("Input tensor '{}' not found", n),
                     None => "No input tensor found".to_string(),
-                }));
+                });
+                return Err(native_error("Failed to get input tensor", fallback));
             }
 
             Ok(Tensor::from_session_ptr(
@@ -136,10 +140,11 @@ impl Session {
             );
 
             if tensor_ptr.is_null() {
-                return Err(MnnError::tensor_error(match name {
+                let fallback = MnnError::tensor_error(match name {
                     Some(n) => format!("Output tensor '{}' not found", n),
                     None => "No output tensor found".to_string(),
-                }));
+                });
+                return Err(native_error("Failed to get output tensor", fallback));
             }
 
             Ok(Tensor::from_session_ptr(
@@ -172,9 +177,10 @@ impl Session {
             x if x == mnn_rs_sys::MNN_ERROR_NOT_SUPPORT => {
                 Err(MnnError::unsupported("Operation not supported"))
             }
-            x if x == mnn_rs_sys::MNN_ERROR_EXECUTION => {
-                Err(MnnError::internal("Execution error during inference"))
-            }
+            x if x == mnn_rs_sys::MNN_ERROR_EXECUTION => Err(native_error(
+                "Execution error during inference",
+                MnnError::internal("Execution error during inference"),
+            )),
             code => Err(MnnError::internal(format!(
                 "Inference failed with error code: {}",
                 code

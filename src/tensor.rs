@@ -5,7 +5,7 @@
 
 use crate::backend::{BackendType, DataType};
 use crate::config::DataFormat;
-use crate::error::{MnnError, MnnResult};
+use crate::error::{native_error, MnnError, MnnResult};
 use crate::session::SessionHandle;
 use mnn_rs_sys::MNNTensor;
 use std::ffi::c_void;
@@ -363,7 +363,10 @@ impl Tensor {
             unsafe { mnn_rs_sys::mnn_tensor_copy_from_host(self.inner, host_tensor.inner) };
 
         if result != mnn_rs_sys::MNN_ERROR_NONE as i32 {
-            return Err(MnnError::internal("Failed to copy from host tensor"));
+            return Err(native_error(
+                "Failed to copy from host tensor",
+                MnnError::internal("Failed to copy from host tensor"),
+            ));
         }
 
         Ok(())
@@ -380,7 +383,10 @@ impl Tensor {
         let result = unsafe { mnn_rs_sys::mnn_tensor_copy_to_host(host_tensor.inner, self.inner) };
 
         if result != mnn_rs_sys::MNN_ERROR_NONE as i32 {
-            return Err(MnnError::internal("Failed to copy to host tensor"));
+            return Err(native_error(
+                "Failed to copy to host tensor",
+                MnnError::internal("Failed to copy to host tensor"),
+            ));
         }
 
         Ok(())
@@ -413,7 +419,10 @@ impl Tensor {
         };
 
         if inner.is_null() {
-            return Err(MnnError::internal("Failed to create device tensor"));
+            return Err(native_error(
+                "Failed to create device tensor",
+                MnnError::internal("Failed to create device tensor"),
+            ));
         }
 
         Ok(unsafe { Tensor::from_owned_ptr(inner, None, mnn_rs_sys::mnn_tensor_destroy, None) })
@@ -431,7 +440,10 @@ impl Tensor {
             unsafe { mnn_rs_sys::mnn_tensor_clone(self.inner, if deep_copy { 1 } else { 0 }) };
 
         if inner.is_null() {
-            return Err(MnnError::internal("Failed to clone tensor"));
+            return Err(native_error(
+                "Failed to clone tensor",
+                MnnError::internal("Failed to clone tensor"),
+            ));
         }
 
         Ok(unsafe {

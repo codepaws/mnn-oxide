@@ -5,7 +5,7 @@
 
 use crate::config::ScheduleConfig;
 use crate::config::SessionMode;
-use crate::error::{MnnError, MnnResult};
+use crate::error::{native_error, MnnError, MnnResult};
 use crate::session::Session;
 use crate::tensor::Tensor;
 use mnn_rs_sys::MNNInterpreter;
@@ -101,10 +101,10 @@ impl Interpreter {
         let inner = unsafe { mnn_rs_sys::mnn_interpreter_create_from_file(c_path.as_ptr()) };
 
         if inner.is_null() {
-            return Err(MnnError::invalid_model(format!(
-                "Failed to load model from: {}",
-                path_str
-            )));
+            return Err(native_error(
+                "Failed to load model",
+                MnnError::invalid_model(format!("Failed to load model from: {path_str}")),
+            ));
         }
 
         Ok(Self {
@@ -150,7 +150,10 @@ impl Interpreter {
         };
 
         if inner.is_null() {
-            return Err(MnnError::invalid_model("Failed to load model from memory"));
+            return Err(native_error(
+                "Failed to load model from memory",
+                MnnError::invalid_model("Failed to load model from memory"),
+            ));
         }
 
         Ok(Self {
@@ -258,7 +261,10 @@ impl Interpreter {
             unsafe { mnn_rs_sys::mnn_interpreter_update_cache(self.inner, session.inner()) };
 
         if result != mnn_rs_sys::MNN_ERROR_NONE as i32 {
-            return Err(MnnError::internal("Failed to update cache"));
+            return Err(native_error(
+                "Failed to update cache",
+                MnnError::internal("Failed to update cache"),
+            ));
         }
 
         Ok(())

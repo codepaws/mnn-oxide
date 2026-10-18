@@ -38,6 +38,10 @@ const char* mnn_get_version(void) {
     });
 }
 
+const char* mnn_last_error(void) {
+    return mnn_rs_abi::error_message();
+}
+
 int mnn_is_backend_available(int type) {
     return mnn_rs_abi::with_c_boundary<int>(0, [&]() -> int {
         // CPU is always available

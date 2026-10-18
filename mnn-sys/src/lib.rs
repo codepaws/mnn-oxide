@@ -144,6 +144,10 @@ extern "C" {
     /// Get MNN version string
     pub fn mnn_get_version() -> *const c_char;
 
+    /// Get the last C++ exception captured by a wrapper call on this thread.
+    /// The pointer is valid until the next guarded wrapper call.
+    pub fn mnn_last_error() -> *const c_char;
+
     /// Check if a backend is available
     pub fn mnn_is_backend_available(type_: c_int) -> c_int;
 

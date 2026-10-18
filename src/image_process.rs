@@ -3,7 +3,7 @@
 //! This module provides image processing capabilities for converting raw image data
 //! to tensors suitable for neural network inference.
 
-use crate::error::{MnnError, MnnResult};
+use crate::error::{native_error, MnnError, MnnResult};
 use crate::tensor::Tensor;
 use mnn_rs_sys::*;
 use std::ffi::c_void;
@@ -356,8 +356,9 @@ impl Matrix {
     /// A non-null pointer must be a valid MNNMatrix allocation owned by caller.
     unsafe fn from_owned_ptr(inner: *mut MNNMatrix) -> MnnResult<Self> {
         if inner.is_null() {
-            Err(MnnError::internal(
-                "Failed to clone matrix (MNN matrix clone returned null)",
+            Err(native_error(
+                "Failed to clone matrix",
+                MnnError::internal("Failed to clone matrix (MNN matrix clone returned null)"),
             ))
         } else {
             Ok(Self { inner })
@@ -431,7 +432,10 @@ impl ImageProcess {
         let inner = unsafe { mnn_image_process_create(&mnn_config) };
 
         if inner.is_null() {
-            return Err(MnnError::internal("Failed to create ImageProcess"));
+            return Err(native_error(
+                "Failed to create ImageProcess",
+                MnnError::internal("Failed to create ImageProcess"),
+            ));
         }
 
         Ok(Self { inner })
@@ -599,7 +603,10 @@ pub fn imread<P: AsRef<std::path::Path>>(path: P, flags: ImreadFlags) -> MnnResu
     let inner = unsafe { mnn_imread(path_cstr.as_ptr(), flags as i32) };
 
     if inner.is_null() {
-        return Err(MnnError::internal("Failed to read image (MNN imread returned null)"));
+        return Err(native_error(
+            "Failed to read image",
+            MnnError::internal("Failed to read image (MNN imread returned null)"),
+        ));
     }
 
     Ok(unsafe { Tensor::from_owned_ptr(inner, None, mnn_tensor_destroy, None) })
@@ -632,7 +639,10 @@ pub fn imwrite<P: AsRef<std::path::Path>>(path: P, tensor: &Tensor) -> MnnResult
     let result = unsafe { mnn_imwrite(path_cstr.as_ptr(), tensor.as_ptr(), std::ptr::null()) };
 
     if result != 0 {
-        return Err(MnnError::internal(format!("MNN imwrite failed with error code: {}", result)));
+        return Err(native_error(
+            "MNN image write failed",
+            MnnError::internal(format!("MNN imwrite failed with error code: {result}")),
+        ));
     }
 
     Ok(())
@@ -669,7 +679,10 @@ pub fn resize(src: &Tensor, dst_width: i32, dst_height: i32, filter: ResizeFilte
     let inner = unsafe { mnn_resize(src.as_ptr(), dst_width, dst_height, filter_code) };
 
     if inner.is_null() {
-        return Err(MnnError::internal("Failed to resize image (MNN resize returned null)"));
+        return Err(native_error(
+            "Failed to resize image",
+            MnnError::internal("Failed to resize image (MNN resize returned null)"),
+        ));
     }
 
     // Note: mnn_resize returns a tensor from VARP's getTensor()

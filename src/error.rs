@@ -2,7 +2,7 @@
 //!
 //! This module provides a comprehensive error type for all MNN operations.
 
-use std::ffi::NulError;
+use std::ffi::{CStr, NulError};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -137,6 +137,24 @@ pub enum MnnError {
 
 /// Result type alias for MNN operations.
 pub type MnnResult<T> = Result<T, MnnError>;
+
+/// Build an application-facing error with detail from the most recent guarded
+/// native call, when the C++ shim captured an exception.
+pub(crate) fn native_error(context: &str, fallback: MnnError) -> MnnError {
+    // SAFETY: the shim returns either null or a thread-local, NUL-terminated
+    // message that remains valid until the next guarded call on this thread.
+    let message = unsafe { mnn_rs_sys::mnn_last_error() };
+    if message.is_null() {
+        return fallback;
+    }
+    // SAFETY: guaranteed by the C shim contract documented above.
+    let detail = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+    if detail.is_empty() {
+        fallback
+    } else {
+        MnnError::internal(format!("{context}: {detail}"))
+    }
+}
 
 impl MnnError {
     /// Create an invalid model error with context

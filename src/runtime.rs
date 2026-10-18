@@ -4,7 +4,7 @@
 //! which can improve memory efficiency and performance when running multiple models.
 
 use crate::backend::BackendType;
-use crate::error::{MnnError, MnnResult};
+use crate::error::{native_error, MnnError, MnnResult};
 use crate::interpreter::Interpreter;
 use crate::session::Session;
 use mnn_rs_sys::*;
@@ -69,8 +69,11 @@ impl RuntimeInfo {
         let inner = unsafe { mnn_runtime_manager_create(backend_type.to_mnn_type(), num_threads) };
 
         if inner.is_null() {
-            return Err(MnnError::internal(
-                "Failed to create runtime manager. MNN may not be built with runtime support.",
+            return Err(native_error(
+                "Failed to create runtime manager",
+                MnnError::internal(
+                    "Failed to create runtime manager. MNN may not be built with runtime support.",
+                ),
             ));
         }
 
@@ -101,8 +104,9 @@ impl RuntimeInfo {
             );
 
             if inner.is_null() {
-                return Err(MnnError::session_error(
+                return Err(native_error(
                     "Failed to create session with runtime",
+                    MnnError::session_error("Failed to create session with runtime"),
                 ));
             }
 
