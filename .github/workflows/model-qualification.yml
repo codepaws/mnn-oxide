@@ -56,6 +56,16 @@ jobs:
         with:
           arch: x64
 
+      - name: Select MSVC linker for Rust
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}".ToUpperInvariant().Replace('-', '_')
+          $targetArch = if ($target.StartsWith('I686_')) { 'x86' } else { 'x64' }
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\$targetArch\link.exe"
+          if (-not (Test-Path -LiteralPath $linker)) { throw "MSVC linker not found: $linker" }
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_${target}_LINKER=$linker"
+
       - name: Assert macOS runner is ARM64
         if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-darwin'
         run: test "$(uname -m)" = "arm64"
