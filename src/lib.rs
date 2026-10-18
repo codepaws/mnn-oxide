@@ -125,6 +125,8 @@ pub use runtime::{InterpreterRuntimeExt, RuntimeInfo};
 
 // LLM inference support (requires building MNN from source with MNN_BUILD_LLM=ON)
 #[cfg(feature = "llm")]
+mod llm_callback;
+#[cfg(feature = "llm")]
 mod llm;
 #[cfg(feature = "llm")]
 pub use llm::{ChatMessage, Embedding, Llm, LlmPerformance, LlmStatus};

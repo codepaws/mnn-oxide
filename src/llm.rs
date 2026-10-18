@@ -30,43 +30,11 @@
 //! `!Send` and `!Sync`). For concurrent sessions, create multiple instances.
 
 use crate::error::{MnnError, MnnResult};
+use crate::llm_callback::{stream_callback, CallbackState};
 use mnn_rs_sys::{MNNEmbedding, MNNLlm, MNNLlmContext};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::marker::PhantomData;
 use std::path::Path;
-
-struct CallbackState<F> {
-    on_chunk: F,
-    panicked: bool,
-}
-
-/// Keep all Rust work behind the C ABI boundary inside `catch_unwind`.
-unsafe extern "C" fn stream_callback<F>(text: *const c_char, userdata: *mut c_void)
-where
-    F: FnMut(&str),
-{
-    if userdata.is_null() {
-        return;
-    }
-    // SAFETY: the caller keeps this state alive for the synchronous native
-    // generation call and passes the exact concrete type used here.
-    let state = unsafe { &mut *(userdata as *mut CallbackState<F>) };
-    if state.panicked {
-        return;
-    }
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if text.is_null() {
-            return;
-        }
-        // SAFETY: LlmStreamBuf passes a NUL-terminated string for this call.
-        let chunk = unsafe { CStr::from_ptr(text) }.to_string_lossy();
-        (state.on_chunk)(&chunk);
-    }));
-    if result.is_err() {
-        state.panicked = true;
-    }
-}
 
 /// Capacity of the token output buffer used by [`Llm::generate_tokens`].
 const TOKEN_BUFFER_CAPACITY: usize = 4096;
@@ -686,36 +654,6 @@ unsafe fn read_int_array(ptr: *mut c_int, len: usize) -> Vec<i32> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn stream_callback_catches_panics_and_remembers_them() {
-        let mut callback = CallbackState::<Box<dyn FnMut(&str)>> {
-            on_chunk: Box::new(|_| panic!("callback failure")),
-            panicked: false,
-        };
-        let text = CString::new("hello").unwrap();
-
-        let userdata = (&mut callback as *mut CallbackState<_>).cast();
-        unsafe { stream_callback::<Box<dyn FnMut(&str)>>(text.as_ptr(), userdata) };
-
-        assert!(callback.panicked);
-    }
-
-    #[test]
-    fn stream_callback_does_not_call_user_closure_after_a_panic() {
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let calls_in_callback = calls.clone();
-        let mut callback = CallbackState::<Box<dyn FnMut(&str)>> {
-            on_chunk: Box::new(move |_| calls_in_callback.set(calls_in_callback.get() + 1)),
-            panicked: true,
-        };
-        let text = CString::new("hello").unwrap();
-
-        let userdata = (&mut callback as *mut CallbackState<_>).cast();
-        unsafe { stream_callback::<Box<dyn FnMut(&str)>>(text.as_ptr(), userdata) };
-
-        assert_eq!(calls.get(), 0);
-    }
-
     use super::*;
 
     #[test]
