@@ -303,6 +303,26 @@ fn main() {
             .display()
     );
 
+    for (feature, enabled) in [
+        ("module", cfg!(feature = "module")),
+        ("runtime", cfg!(feature = "runtime")),
+        ("llm", cfg!(feature = "llm")),
+    ] {
+        if enabled {
+            for header in build_config::optional_module_headers(feature).unwrap_or_else(|message| {
+                panic!("MNN feature header configuration error: {message}")
+            }) {
+                let path = include_dir.as_ref().unwrap().join(header);
+                if !path.is_file() {
+                    panic!(
+                        "MNN feature `{feature}` requires public header `{}`",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
     // Build the wrapper library
     let mut build = cc::Build::new();
     build.cpp(true).file(&wrapper_cpp).include(&wrapper_dir);
@@ -328,28 +348,22 @@ fn main() {
     }
     // Note: module feature requires MNN with training module (Express/Module)
     // Optional modules are compiled only in explicit source builds.
-    if cfg!(feature = "module") && cfg!(feature = "build-from-source") {
+    if cfg!(feature = "module") {
         build.define("MNN_MODULE_ENABLED", None);
         println!("cargo:rustc-cfg=feature=\"module\"");
-    } else if cfg!(feature = "module") {
-        panic!("'module' requires an MNN source build with the training module");
     }
-    // Runtime sharing uses Interpreter::RuntimeInfo and is enabled only for
-    // explicit source builds because that API is not required in BYO kits.
-    if cfg!(feature = "runtime") && cfg!(feature = "build-from-source") {
+    // Optional runtime/module subsystems are usable from source builds or
+    // explicit prebuilt/bring-your-own artifacts when the required public
+    // headers and symbols are present.
+    if cfg!(feature = "runtime") {
         build.define("MNN_RUNTIME_ENABLED", None);
         println!("cargo:rustc-cfg=feature=\"runtime\"");
-    } else if cfg!(feature = "runtime") {
-        panic!("'runtime' requires an MNN source build with RuntimeInfo support");
     }
 
     // Compile module wrapper if feature enabled
     // Note: This requires MNN with training module, only available when building from source
     let module_wrapper_cpp = wrapper_dir.join("mnn_module_wrapper.cpp");
-    if cfg!(feature = "module")
-        && cfg!(feature = "build-from-source")
-        && module_wrapper_cpp.exists()
-    {
+    if cfg!(feature = "module") && module_wrapper_cpp.exists() {
         build.file(&module_wrapper_cpp);
     }
 
@@ -557,6 +571,8 @@ fn main() {
     println!("cargo:rerun-if-changed=wrapper/mnn_wrapper.cpp");
     println!("cargo:rerun-if-changed=wrapper/mnn_llm_wrapper.h");
     println!("cargo:rerun-if-changed=wrapper/mnn_llm_wrapper.cpp");
+    println!("cargo:rerun-if-changed=wrapper/mnn_module_wrapper.h");
+    println!("cargo:rerun-if-changed=wrapper/mnn_module_wrapper.cpp");
 
     if debug_build {
         println!("cargo:warning=mnn-oxide-sys: Build script completed successfully");

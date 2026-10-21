@@ -113,6 +113,16 @@ void mnn_interpreter_destroy(MNNInterpreter* interpreter);
 /** Create session with config */
 MNNSession* mnn_interpreter_create_session(MNNInterpreter* interpreter, int type, int num_thread);
 
+/** Create a session with explicitly mapped backend tuning modes (shim ABI v2). */
+MNNSession* mnn_interpreter_create_session_v2(
+    MNNInterpreter* interpreter,
+    int type,
+    int num_thread,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+);
+
 /** Destroy session */
 void mnn_interpreter_release_session(MNNInterpreter* interpreter, MNNSession* session);
 
@@ -381,6 +391,15 @@ typedef struct MNNRuntimeManagerHandle MNNRuntimeManager;
 /** Create shared runtime info from a backend configuration. */
 MNNRuntimeManager* mnn_runtime_manager_create(int type, int num_threads);
 
+/** Create a shared runtime with explicitly mapped backend tuning modes (shim ABI v2). */
+MNNRuntimeManager* mnn_runtime_manager_create_v2(
+    int type,
+    int num_threads,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+);
+
 /** Destroy shared runtime info. */
 void mnn_runtime_manager_destroy(MNNRuntimeManager* manager);
 
@@ -396,6 +415,17 @@ MNNSession* mnn_interpreter_create_session_with_runtime(
     MNNRuntimeManager* runtime,
     int type,
     int num_threads
+);
+
+/** Create a session with a shared runtime and explicit backend modes (shim ABI v2). */
+MNNSession* mnn_interpreter_create_session_with_runtime_v2(
+    MNNInterpreter* interpreter,
+    MNNRuntimeManager* runtime,
+    int type,
+    int num_threads,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
 );
 
 #ifdef __cplusplus

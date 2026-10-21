@@ -52,6 +52,9 @@ fn main() -> Result<(), MnnError> {
         mnn_oxide::BackendAvailability::Unavailable => {
             return Err(MnnError::backend_not_available(backend_type.name()));
         }
+        mnn_oxide::BackendAvailability::NotConfigured => {
+            return Err(MnnError::backend_not_available(backend_type.name()));
+        }
         mnn_oxide::BackendAvailability::Unknown => {
             println!(
                 "Native backend probing is not implemented; attempting the explicitly selected backend."

@@ -23,6 +23,33 @@
 
 #ifdef MNN_MODULE_ENABLED
 using namespace MNN::Express;
+
+class VariableUnmapGuard {
+public:
+    explicit VariableUnmapGuard(Variable* variable) : variable_(variable) {}
+    ~VariableUnmapGuard() {
+        if (variable_) variable_->unMap();
+    }
+    VariableUnmapGuard(const VariableUnmapGuard&) = delete;
+    VariableUnmapGuard& operator=(const VariableUnmapGuard&) = delete;
+
+private:
+    Variable* variable_;
+};
+
+bool float_element_count(const Variable::Info& info, size_t& count) {
+    if (info.order == NC4HW4 || info.type.code != halide_type_float || info.type.bits != 32 || info.type.lanes != 1) {
+        return false;
+    }
+    count = 1;
+    for (int dim : info.dim) {
+        if (dim <= 0 || count > static_cast<size_t>(std::numeric_limits<int>::max()) / static_cast<size_t>(dim)) {
+            return false;
+        }
+        count *= static_cast<size_t>(dim);
+    }
+    return count > 0 && count <= static_cast<size_t>(std::numeric_limits<int>::max());
+}
 #endif
 
 /* ============================================================================
@@ -70,10 +97,13 @@ MNNModule* mnn_module_load_from_file(
     auto output_names = to_string_vector(outputs, output_count);
 
     Module::Config module_config;
+    Module::BackendInfo backend_info;
     if (config) {
         module_config.dynamic = config->dynamic;
         module_config.shapeMutable = config->shape_mutable;
         module_config.rearrange = config->rearrange;
+        backend_info.type = static_cast<MNNForwardType>(config->backend_type);
+        module_config.backend = &backend_info;
     }
 
     Module* module = Module::load(input_names, output_names, file_path, &module_config);
@@ -101,10 +131,13 @@ MNNModule* mnn_module_load_from_buffer(
     auto output_names = to_string_vector(outputs, output_count);
 
     Module::Config module_config;
+    Module::BackendInfo backend_info;
     if (config) {
         module_config.dynamic = config->dynamic;
         module_config.shapeMutable = config->shape_mutable;
         module_config.rearrange = config->rearrange;
+        backend_info.type = static_cast<MNNForwardType>(config->backend_type);
+        module_config.backend = &backend_info;
     }
 
     Module* module = Module::load(input_names, output_names, buffer, buffer_size, &module_config);
@@ -212,6 +245,13 @@ void mnn_var_array_free(MNNVar** vars, int count) {
 #endif
         delete[] vars;
     });
+}
+
+MNNVar* mnn_var_array_take(MNNVar** vars, int count, int index) {
+    if (!vars || count < 0 || index < 0 || index >= count) return nullptr;
+    MNNVar* value = vars[index];
+    vars[index] = nullptr;
+    return value;
 }
 
 int mnn_module_get_parameter_count(const MNNModule* module) {
@@ -436,26 +476,19 @@ float* mnn_var_read_float(const MNNVar* var, int* count) {
 
     auto* v = reinterpret_cast<const VARP*>(var);
 
-    // Get info
+    // Get and validate the actual variable shape and element type.
     auto* variable = v->get();
     if (!variable) return nullptr;
     auto info = variable->getInfo();
     if (!info) return nullptr;
 
-    size_t element_count = 1;
-    for (int dim : info->dim) {
-        if (dim < 0 || (dim != 0 && element_count > static_cast<size_t>(std::numeric_limits<int>::max()) / static_cast<size_t>(dim))) return nullptr;
-        element_count *= static_cast<size_t>(dim);
-    }
-    if (element_count == 0 || element_count > static_cast<size_t>(std::numeric_limits<int>::max())) return nullptr;
-
-    // Note: This is a simplified implementation
-    // Actual reading requires proper tensor access
+    size_t element_count = 0;
+    if (!float_element_count(*info, element_count)) return nullptr;
+    const float* mapped = variable->readMap<float>();
+    if (!mapped) return nullptr;
+    VariableUnmapGuard unmap(variable);
     std::unique_ptr<float[]> data(new float[element_count]);
-    // In real implementation, we need to get the underlying tensor data
-    // This requires MNN's internal API access
-    memset(data.get(), 0, element_count * sizeof(float));
-
+    std::copy_n(mapped, element_count, data.get());
     *count = static_cast<int>(element_count);
     return data.release();
 #else
@@ -466,16 +499,29 @@ float* mnn_var_read_float(const MNNVar* var, int* count) {
     });
 }
 
+void mnn_float_array_free(float* values) {
+    delete[] values;
+}
+
 bool mnn_var_write_float(MNNVar* var, const float* data, int count) {
     return mnn_oxide_abi::with_c_boundary<bool>(false, [&]() -> bool {
 #ifdef MNN_MODULE_ENABLED
     if (!var || !data || count <= 0) return false;
 
     auto* v = reinterpret_cast<VARP*>(var);
-    // Note: Writing requires proper tensor access which is complex
-    // This is a placeholder
-    (void)v;
-    return false;
+    auto* variable = v->get();
+    if (!variable) return false;
+    auto info = variable->getInfo();
+    if (!info) return false;
+    size_t element_count = 0;
+    if (!float_element_count(*info, element_count) || element_count != static_cast<size_t>(count)) {
+        return false;
+    }
+    float* mapped = variable->writeMap<float>();
+    if (!mapped) return false;
+    VariableUnmapGuard unmap(variable);
+    std::copy_n(data, element_count, mapped);
+    return true;
 #else
     return false;
 #endif
@@ -508,6 +554,10 @@ int* mnn_var_get_shape(const MNNVar* var, int* count) {
 #endif
 
     });
+}
+
+void mnn_int_array_free(int* values) {
+    delete[] values;
 }
 
 /* ============================================================================
@@ -766,3 +816,62 @@ MNNVar** mnn_var_split(const MNNVar* var, int splits, int axis, int* output_coun
 
     });
 }
+
+int mnn_backend_probe_compiled(int backend_type) {
+#ifdef MNN_MODULE_ENABLED
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (backend_type == MNN_FORWARD_CPU) return 1;
+        MNN::ScheduleConfig config;
+        auto* manager = MNN::Express::Executor::RuntimeManager::createRuntimeManager(config);
+        if (!manager) return -1;
+        std::vector<::MNNForwardType> types{static_cast<::MNNForwardType>(backend_type)};
+        const auto supported = manager->isBackendSupport(types);
+        MNN::Express::Executor::RuntimeManager::destroy(manager);
+        if (supported.size() != 1) return -1;
+        return supported[0] ? 1 : 0;
+    });
+#else
+    (void)backend_type;
+    return -1;
+#endif
+}
+
+int mnn_backend_probe_runtime(int backend_type) {
+#ifdef MNN_MODULE_ENABLED
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
+        MNN::ScheduleConfig config;
+        config.type = static_cast<::MNNForwardType>(backend_type);
+        auto* manager = MNN::Express::Executor::RuntimeManager::createRuntimeManager(config);
+        if (!manager) return -1;
+        int actual_type = -1;
+        manager->getInfo(MNN::Interpreter::BACKENDS, &actual_type);
+        MNN::Express::Executor::RuntimeManager::destroy(manager);
+        return actual_type;
+    });
+#else
+    (void)backend_type;
+    return -1;
+#endif
+}
+
+int mnn_backend_get_device_info(int backend_type, const char* key, char** value) {
+#ifdef MNN_MODULE_ENABLED
+    if (value) *value = nullptr;
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (!key || !value) return -1;
+        std::string result;
+        if (!MNN::Express::Executor::RuntimeManager::getDeviceInfo(key, static_cast<::MNNForwardType>(backend_type), result)) return 0;
+        char* copy = static_cast<char*>(std::malloc(result.size() + 1));
+        if (!copy) return -1;
+        std::memcpy(copy, result.c_str(), result.size() + 1);
+        *value = copy;
+        return 1;
+    });
+#else
+    (void)backend_type; (void)key;
+    if (value) *value = nullptr;
+    return -1;
+#endif
+}
+
+void mnn_backend_device_info_free(char* value) { std::free(value); }

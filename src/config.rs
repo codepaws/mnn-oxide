@@ -4,6 +4,46 @@
 //! sessions with specific backend settings, thread counts, and data formats.
 
 use crate::backend::{BackendConfig, BackendType};
+use crate::error::{MnnError, MnnResult};
+
+impl BackendConfig {
+    /// Translate user-facing backend modes to the enum values declared by
+    /// MNN 3.6.1. The native enum order differs from the Rust enum order for
+    /// `High` and `Low`, so these mappings must stay explicit.
+    pub(crate) fn native_values(&self) -> MnnResult<(i32, i32, i32)> {
+        if self.backend_type.capability().availability
+            == crate::backend::BackendAvailability::NotConfigured
+        {
+            return Err(MnnError::unsupported(format!(
+                "{} backend adapter is not enabled in this mnn-oxide build",
+                self.backend_type
+            )));
+        }
+        if self.device_id.is_some() {
+            return Err(MnnError::unsupported(
+                "device_id is not supported by MNN 3.6.1 BackendConfig",
+            ));
+        }
+
+        let memory = match self.memory_mode {
+            crate::config::MemoryMode::Normal => 0,
+            crate::config::MemoryMode::High => 1,
+            crate::config::MemoryMode::Low => 2,
+        };
+        let power = match self.power_mode {
+            crate::config::PowerMode::Normal => 0,
+            crate::config::PowerMode::High => 1,
+            crate::config::PowerMode::Low => 2,
+        };
+        let precision = match self.precision_mode {
+            crate::config::PrecisionMode::Normal => 0,
+            crate::config::PrecisionMode::High => 1,
+            crate::config::PrecisionMode::Low => 2,
+            crate::config::PrecisionMode::LowBf16 => 3,
+        };
+        Ok((memory, power, precision))
+    }
+}
 
 /// Data format for tensors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -202,6 +242,9 @@ impl ScheduleConfig {
     }
 
     /// Set the device ID for GPU backends.
+    #[deprecated(
+        note = "MNN 3.6.1 BackendConfig does not support device_id; session creation returns Unsupported"
+    )]
     pub fn device_id(mut self, id: i32) -> Self {
         self.backend_config.device_id = Some(id);
         self
@@ -253,6 +296,9 @@ impl ScheduleConfigBuilder {
     }
 
     /// Set device ID.
+    #[deprecated(
+        note = "MNN 3.6.1 BackendConfig does not support device_id; session creation returns Unsupported"
+    )]
     pub fn device_id(mut self, id: i32) -> Self {
         self.config.backend_config.device_id = Some(id);
         self
@@ -286,5 +332,81 @@ mod tests {
         assert_eq!(config.num_threads, 8);
         assert_eq!(config.backend_config.memory_mode, MemoryMode::Low);
         assert_eq!(config.backend_config.precision_mode, PrecisionMode::High);
+    }
+
+    #[test]
+    fn backend_modes_map_to_mnn_enum_values_without_swapping_high_and_low() {
+        assert_eq!(
+            BackendConfig::new(BackendType::CPU)
+                .with_memory_mode(MemoryMode::High)
+                .native_values()
+                .unwrap(),
+            (1, 0, 0),
+        );
+        assert_eq!(
+            BackendConfig::new(BackendType::CPU)
+                .with_memory_mode(MemoryMode::Low)
+                .native_values()
+                .unwrap(),
+            (2, 0, 0),
+        );
+        assert_eq!(
+            BackendConfig::new(BackendType::CPU)
+                .with_power_mode(PowerMode::High)
+                .native_values()
+                .unwrap(),
+            (0, 1, 0),
+        );
+        assert_eq!(
+            BackendConfig::new(BackendType::CPU)
+                .with_power_mode(PowerMode::Low)
+                .native_values()
+                .unwrap(),
+            (0, 2, 0),
+        );
+        assert_eq!(
+            BackendConfig::new(BackendType::CPU)
+                .with_precision_mode(PrecisionMode::High)
+                .native_values()
+                .unwrap(),
+            (0, 0, 1),
+        );
+        assert_eq!(
+            BackendConfig::new(BackendType::CPU)
+                .with_precision_mode(PrecisionMode::Low)
+                .native_values()
+                .unwrap(),
+            (0, 0, 2),
+        );
+        assert_eq!(
+            BackendConfig::new(BackendType::CPU)
+                .with_precision_mode(PrecisionMode::LowBf16)
+                .native_values()
+                .unwrap(),
+            (0, 0, 3),
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn mnn_backend_config_rejects_unimplemented_device_ids() {
+        let error = BackendConfig::new(BackendType::CPU)
+            .with_device_id(1)
+            .native_values()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("device_id"));
+        assert!(error.to_string().contains("not supported"));
+    }
+
+    #[cfg(not(feature = "vulkan"))]
+    #[test]
+    fn mnn_backend_config_rejects_provider_without_adapter_feature() {
+        let error = BackendConfig::new(BackendType::Vulkan)
+            .native_values()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Vulkan"));
+        assert!(error.to_string().contains("not enabled"));
     }
 }

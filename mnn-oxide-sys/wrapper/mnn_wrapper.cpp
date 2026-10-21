@@ -38,6 +38,42 @@ struct MnnTensorDeleter {
     }
 };
 
+bool apply_backend_modes(
+    ScheduleConfig& schedule,
+    int memory_mode,
+    int power_mode,
+    int precision_mode,
+    BackendConfig& backend
+) {
+    switch (memory_mode) {
+        case 0: backend.memory = BackendConfig::Memory_Normal; break;
+        case 1: backend.memory = BackendConfig::Memory_High; break;
+        case 2: backend.memory = BackendConfig::Memory_Low; break;
+        default:
+            mnn_oxide_abi::record_error("invalid MNN memory mode");
+            return false;
+    }
+    switch (power_mode) {
+        case 0: backend.power = BackendConfig::Power_Normal; break;
+        case 1: backend.power = BackendConfig::Power_High; break;
+        case 2: backend.power = BackendConfig::Power_Low; break;
+        default:
+            mnn_oxide_abi::record_error("invalid MNN power mode");
+            return false;
+    }
+    switch (precision_mode) {
+        case 0: backend.precision = BackendConfig::Precision_Normal; break;
+        case 1: backend.precision = BackendConfig::Precision_High; break;
+        case 2: backend.precision = BackendConfig::Precision_Low; break;
+        case 3: backend.precision = BackendConfig::Precision_Low_BF16; break;
+        default:
+            mnn_oxide_abi::record_error("invalid MNN precision mode");
+            return false;
+    }
+    schedule.backendConfig = &backend;
+    return true;
+}
+
 #ifdef MNN_RUNTIME_ENABLED
 // Keep MNN's public RuntimeInfo (a pair of shared runtime pointers) behind
 // the opaque C handle. Express::Executor::RuntimeManager is a separate API
@@ -117,6 +153,31 @@ MNNSession* mnn_interpreter_create_session(MNNInterpreter* interpreter, int type
         config.numThread = num_thread > 0 ? num_thread : 4;
         // Leave backendConfig as nullptr (default)
 
+        Session* session = interp->createSession(config);
+        return reinterpret_cast<MNNSession*>(session);
+    });
+}
+
+MNNSession* mnn_interpreter_create_session_v2(
+    MNNInterpreter* interpreter,
+    int type,
+    int num_thread,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+) {
+    return mnn_oxide_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
+        if (!interpreter) {
+            return nullptr;
+        }
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        ScheduleConfig config;
+        BackendConfig backend;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_thread > 0 ? num_thread : 4;
+        if (!apply_backend_modes(config, memory_mode, power_mode, precision_mode, backend)) {
+            return nullptr;
+        }
         Session* session = interp->createSession(config);
         return reinterpret_cast<MNNSession*>(session);
     });
@@ -1057,6 +1118,36 @@ MNNRuntimeManager* mnn_runtime_manager_create(int type, int num_threads) {
     });
 }
 
+MNNRuntimeManager* mnn_runtime_manager_create_v2(
+    int type,
+    int num_threads,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+) {
+    return mnn_oxide_abi::with_c_boundary<MNNRuntimeManager*>(nullptr, [&]() -> MNNRuntimeManager* {
+    #ifdef MNN_RUNTIME_ENABLED
+        ScheduleConfig config;
+        BackendConfig backend;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_threads > 0 ? num_threads : 4;
+        if (!apply_backend_modes(config, memory_mode, power_mode, precision_mode, backend)) {
+            return nullptr;
+        }
+        std::vector<ScheduleConfig> configs{config};
+        auto* runtime = new MnnRuntimeInfoHolder{Interpreter::createRuntime(configs)};
+        return reinterpret_cast<MNNRuntimeManager*>(runtime);
+    #else
+        (void)type;
+        (void)num_threads;
+        (void)memory_mode;
+        (void)power_mode;
+        (void)precision_mode;
+        return nullptr;
+    #endif
+    });
+}
+
 void mnn_runtime_manager_destroy(MNNRuntimeManager* manager) {
     mnn_oxide_abi::with_c_boundary_void([&] {
     #ifdef MNN_RUNTIME_ENABLED
@@ -1096,6 +1187,44 @@ MNNSession* mnn_interpreter_create_session_with_runtime(
         (void)runtime;
         (void)type;
         (void)num_threads;
+        return nullptr;
+    #endif
+    });
+}
+
+MNNSession* mnn_interpreter_create_session_with_runtime_v2(
+    MNNInterpreter* interpreter,
+    MNNRuntimeManager* runtime,
+    int type,
+    int num_threads,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+) {
+    return mnn_oxide_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
+    #ifdef MNN_RUNTIME_ENABLED
+        if (!interpreter || !runtime) {
+            return nullptr;
+        }
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto runtime_info = reinterpret_cast<MnnRuntimeInfoHolder*>(runtime);
+        ScheduleConfig config;
+        BackendConfig backend;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_threads > 0 ? num_threads : 4;
+        if (!apply_backend_modes(config, memory_mode, power_mode, precision_mode, backend)) {
+            return nullptr;
+        }
+        Session* session = interp->createSession(config, runtime_info->runtime);
+        return reinterpret_cast<MNNSession*>(session);
+    #else
+        (void)interpreter;
+        (void)runtime;
+        (void)type;
+        (void)num_threads;
+        (void)memory_mode;
+        (void)power_mode;
+        (void)precision_mode;
         return nullptr;
     #endif
     });

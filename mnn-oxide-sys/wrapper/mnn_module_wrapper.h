@@ -121,6 +121,8 @@ MNNVar** mnn_module_forward_multi(MNNModule* module,
                                    int* output_count);
 /** Destroy each variable and release an array returned by a multi-result API. */
 void mnn_var_array_free(MNNVar** vars, int count);
+/** Transfer one owned variable out of an array before freeing the container. */
+MNNVar* mnn_var_array_take(MNNVar** vars, int count, int index);
 
 /** Get module parameter count */
 int mnn_module_get_parameter_count(const MNNModule* module);
@@ -183,6 +185,8 @@ void mnn_var_info_free(MNNVarInfo* info);
  * @return Float array (caller must free)
  */
 float* mnn_var_read_float(const MNNVar* var, int* count);
+/** Free a float array returned by mnn_var_read_float. */
+void mnn_float_array_free(float* values);
 
 /** Write float data to variable
  * @param var Variable
@@ -198,6 +202,8 @@ bool mnn_var_write_float(MNNVar* var, const float* data, int count);
  * @return Shape array (caller must free)
  */
 int* mnn_var_get_shape(const MNNVar* var, int* count);
+/** Free a shape array returned by mnn_var_get_shape. */
+void mnn_int_array_free(int* values);
 
 /** Variable arithmetic operations */
 MNNVar* mnn_var_add(const MNNVar* a, const MNNVar* b);
@@ -227,6 +233,17 @@ MNNVar* mnn_var_concat(const MNNVar** vars, int var_count, int axis);
 /** Variable split */
 /** Return an owned array of owned variables; release it with mnn_var_array_free(). */
 MNNVar** mnn_var_split(const MNNVar* var, int splits, int axis, int* output_count);
+
+/** Probe whether the active MNN native artifact registers a backend creator.
+ * Returns 1 when registered, 0 when not registered, and -1 when probing fails.
+ */
+int mnn_backend_probe_compiled(int backend_type);
+/** Initialize a provider runtime and return its actual assigned backend or -1. */
+int mnn_backend_probe_runtime(int backend_type);
+/** Query a provider-specific device information key. Returns 1 when reported, 0 when unsupported, -1 on failure. */
+int mnn_backend_get_device_info(int backend_type, const char* key, char** value);
+/** Free a string returned by mnn_backend_get_device_info. */
+void mnn_backend_device_info_free(char* value);
 
 #ifdef __cplusplus
 }

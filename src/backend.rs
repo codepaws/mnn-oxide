@@ -11,19 +11,15 @@ pub enum BackendType {
     CPU,
 
     /// CUDA backend (NVIDIA GPUs)
-    #[cfg(feature = "cuda")]
     Cuda,
 
     /// OpenCL backend (cross-platform GPU)
-    #[cfg(feature = "opencl")]
     OpenCL,
 
     /// Vulkan backend (cross-platform GPU)
-    #[cfg(feature = "vulkan")]
     Vulkan,
 
     /// Metal backend (Apple platforms)
-    #[cfg(feature = "metal")]
     Metal,
 
     /// Auto-detect best available backend
@@ -35,13 +31,9 @@ impl BackendType {
     pub(crate) fn to_mnn_type(&self) -> i32 {
         match self {
             BackendType::CPU => mnn_oxide_sys::MNN_FORWARD_CPU,
-            #[cfg(feature = "cuda")]
             BackendType::Cuda => mnn_oxide_sys::MNN_FORWARD_CUDA,
-            #[cfg(feature = "opencl")]
             BackendType::OpenCL => mnn_oxide_sys::MNN_FORWARD_OPENCL,
-            #[cfg(feature = "vulkan")]
             BackendType::Vulkan => mnn_oxide_sys::MNN_FORWARD_VULKAN,
-            #[cfg(feature = "metal")]
             BackendType::Metal => mnn_oxide_sys::MNN_FORWARD_METAL,
             BackendType::Auto => mnn_oxide_sys::MNN_FORWARD_AUTO,
         }
@@ -50,13 +42,9 @@ impl BackendType {
     /// Convert from MNN forward type constant.
     pub(crate) fn from_mnn_type(code: i32) -> Self {
         match code {
-            #[cfg(feature = "cuda")]
             x if x == mnn_oxide_sys::MNN_FORWARD_CUDA => BackendType::Cuda,
-            #[cfg(feature = "opencl")]
             x if x == mnn_oxide_sys::MNN_FORWARD_OPENCL => BackendType::OpenCL,
-            #[cfg(feature = "vulkan")]
             x if x == mnn_oxide_sys::MNN_FORWARD_VULKAN => BackendType::Vulkan,
-            #[cfg(feature = "metal")]
             x if x == mnn_oxide_sys::MNN_FORWARD_METAL => BackendType::Metal,
             _ => BackendType::CPU,
         }
@@ -66,13 +54,9 @@ impl BackendType {
     pub fn name(&self) -> &'static str {
         match self {
             BackendType::CPU => "CPU",
-            #[cfg(feature = "cuda")]
             BackendType::Cuda => "CUDA",
-            #[cfg(feature = "opencl")]
             BackendType::OpenCL => "OpenCL",
-            #[cfg(feature = "vulkan")]
             BackendType::Vulkan => "Vulkan",
-            #[cfg(feature = "metal")]
             BackendType::Metal => "Metal",
             BackendType::Auto => "Auto",
         }
@@ -81,13 +65,9 @@ impl BackendType {
     /// Check if this backend is a GPU backend.
     pub fn is_gpu(&self) -> bool {
         match self {
-            #[cfg(feature = "cuda")]
             BackendType::Cuda => true,
-            #[cfg(feature = "opencl")]
             BackendType::OpenCL => true,
-            #[cfg(feature = "vulkan")]
             BackendType::Vulkan => true,
-            #[cfg(feature = "metal")]
             BackendType::Metal => true,
             _ => false,
         }
@@ -95,26 +75,144 @@ impl BackendType {
 
     /// Report whether this backend is known to be available on the current system.
     ///
-    /// CPU is reported as [`BackendAvailability::Available`] by the current API
-    /// contract. Accelerator probing is not implemented yet, so CUDA, OpenCL,
-    /// Vulkan, Metal, and automatic selection return [`BackendAvailability::Unknown`].
-    /// Cargo features only control which
-    /// backend variants can be configured; they do not prove native support,
-    /// driver availability, device presence, or successful execution.
+    /// CPU is reported as [`BackendAvailability::Available`] when compiled.
+    /// Accelerators return [`BackendAvailability::NotCompiled`] if excluded,
+    /// or [`BackendAvailability::Unknown`] until a device/session probe exists.
+    /// Cargo features do not prove native support, driver availability, device
+    /// presence, or successful execution. Use [`BackendType::capability`] to
+    /// distinguish a backend excluded from this build from an unprobed backend,
+    /// and `probe_native_compiled` when the `module` feature is enabled.
     pub fn availability(&self) -> BackendAvailability {
-        match self {
-            BackendType::CPU => BackendAvailability::Available,
-            #[cfg(feature = "cuda")]
-            BackendType::Cuda => BackendAvailability::Unknown,
-            #[cfg(feature = "opencl")]
-            BackendType::OpenCL => BackendAvailability::Unknown,
-            #[cfg(feature = "vulkan")]
-            BackendType::Vulkan => BackendAvailability::Unknown,
-            #[cfg(feature = "metal")]
-            BackendType::Metal => BackendAvailability::Unknown,
-            BackendType::Auto => BackendAvailability::Unknown,
+        self.capability().availability
+    }
+
+    /// Describe this backend's adapter configuration and current runtime
+    /// availability without initializing a provider. Use the explicit native
+    /// probes for creator registration and runtime assignment.
+    pub fn capability(&self) -> BackendCapability {
+        let adapter_enabled = match self {
+            BackendType::CPU => cfg!(feature = "cpu"),
+            BackendType::Cuda => cfg!(feature = "cuda"),
+            BackendType::OpenCL => cfg!(feature = "opencl"),
+            BackendType::Vulkan => cfg!(feature = "vulkan"),
+            BackendType::Metal => cfg!(feature = "metal"),
+            BackendType::Auto => true,
+        };
+        let (availability, reason) = if !adapter_enabled {
+            (
+                BackendAvailability::NotConfigured,
+                Some("backend adapter support is not enabled in this mnn-oxide build"),
+            )
+        } else if *self == BackendType::CPU {
+            (BackendAvailability::Available, None)
+        } else if *self == BackendType::Auto {
+            (
+                BackendAvailability::Unknown,
+                Some("MNN chooses a backend at session creation; no single provider is established before a model is loaded"),
+            )
+        } else {
+            (
+                BackendAvailability::Unknown,
+                Some(
+                    "native creator registration and device/runtime state require explicit probes",
+                ),
+            )
+        };
+        BackendCapability {
+            backend: *self,
+            adapter_enabled,
+            availability,
+            reason,
         }
     }
+
+    /// Query the active native artifact's registered backend creator.
+    ///
+    /// MNN's `RuntimeManager::isBackendSupport` reports whether a native
+    /// runtime creator is registered. It does not establish that a device or
+    /// compatible driver is present. Requires the `module` feature because
+    /// this API belongs to MNN Express' public RuntimeManager surface.
+    #[cfg(feature = "module")]
+    pub fn probe_native_compiled(&self) -> crate::MnnResult<bool> {
+        let result = unsafe { mnn_oxide_sys::mnn_backend_probe_compiled(self.to_mnn_type()) };
+        match result {
+            1 => Ok(true),
+            0 => Ok(false),
+            _ => Err(crate::error::native_error(
+                "MNN native backend support probe failed",
+                crate::MnnError::backend_error(format!("could not probe {} support", self.name())),
+            )),
+        }
+    }
+
+    /// Initialize this provider's MNN runtime and return the backend MNN actually assigns.
+    ///
+    /// MNN may substitute a different provider when the requested runtime is
+    /// unavailable. A successful return therefore does not imply that the
+    /// requested provider was selected; compare the returned value with `self`.
+    /// Runtime initialization can load provider drivers and is best-effort.
+    #[cfg(feature = "module")]
+    pub fn probe_native_runtime(&self) -> crate::MnnResult<Self> {
+        let actual = unsafe { mnn_oxide_sys::mnn_backend_probe_runtime(self.to_mnn_type()) };
+        match actual {
+            x if x == mnn_oxide_sys::MNN_FORWARD_CPU => Ok(Self::CPU),
+            x if x == mnn_oxide_sys::MNN_FORWARD_CUDA => Ok(Self::Cuda),
+            x if x == mnn_oxide_sys::MNN_FORWARD_OPENCL => Ok(Self::OpenCL),
+            x if x == mnn_oxide_sys::MNN_FORWARD_VULKAN => Ok(Self::Vulkan),
+            x if x == mnn_oxide_sys::MNN_FORWARD_METAL => Ok(Self::Metal),
+            x if x == mnn_oxide_sys::MNN_FORWARD_AUTO => Ok(Self::Auto),
+            -1 => Err(crate::error::native_error(
+                "MNN provider runtime probe failed",
+                crate::MnnError::backend_error(format!(
+                    "could not initialize {} runtime",
+                    self.name()
+                )),
+            )),
+            x => Err(crate::MnnError::unsupported(format!(
+                "MNN runtime probe returned unknown backend value {x}"
+            ))),
+        }
+    }
+
+    /// Query an MNN provider-specific device information key.
+    ///
+    /// MNN does not standardize keys across providers. `None` means that the
+    /// native provider did not supply the requested key; it does not imply
+    /// that the provider is unavailable. Requires `module`.
+    #[cfg(feature = "module")]
+    pub fn device_info(&self, key: &str) -> crate::MnnResult<Option<String>> {
+        let key = std::ffi::CString::new(key)?;
+        let mut value = std::ptr::null_mut();
+        let status = unsafe {
+            mnn_oxide_sys::mnn_backend_get_device_info(self.to_mnn_type(), key.as_ptr(), &mut value)
+        };
+        match status {
+            0 => Ok(None),
+            1 if !value.is_null() => {
+                let result = unsafe { std::ffi::CStr::from_ptr(value) }
+                    .to_string_lossy()
+                    .into_owned();
+                unsafe { mnn_oxide_sys::mnn_backend_device_info_free(value) };
+                Ok(Some(result))
+            }
+            _ => Err(crate::error::native_error(
+                "MNN native device information query failed",
+                crate::MnnError::backend_error(format!(
+                    "could not query {} device info",
+                    self.name()
+                )),
+            )),
+        }
+    }
+
+    /// All concrete MNN providers, including providers absent from this build.
+    pub const PROVIDERS: [BackendType; 5] = [
+        BackendType::CPU,
+        BackendType::Cuda,
+        BackendType::OpenCL,
+        BackendType::Vulkan,
+        BackendType::Metal,
+    ];
 
     /// Check if this backend is available on the current system.
     ///
@@ -175,12 +273,30 @@ pub fn is_backend_available(backend: BackendType) -> bool {
 /// Result of checking whether a backend is available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendAvailability {
+    /// The backend adapter is not configured in this `mnn-oxide` build.
+    NotConfigured,
     /// The runtime explicitly confirmed that the backend is available.
     Available,
     /// The runtime explicitly confirmed that the backend is unavailable.
     Unavailable,
     /// The backend has not been probed, or no reliable probe is implemented.
     Unknown,
+}
+
+/// Build and runtime capability snapshot for one MNN provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BackendCapability {
+    /// Concrete MNN provider.
+    pub backend: BackendType,
+    /// Whether this `mnn-oxide` build enables the backend adapter. This does
+    /// not establish that the selected native MNN artifact includes it.
+    pub adapter_enabled: bool,
+    /// Runtime availability; accelerators remain unknown until `probe_native_runtime`
+    /// or a successful model session provides evidence. Registered creator support
+    /// is separately available through `probe_native_compiled`.
+    pub availability: BackendAvailability,
+    /// Why availability is unknown or unavailable, when applicable.
+    pub reason: Option<&'static str>,
 }
 
 /// Backend capabilities.
@@ -277,6 +393,9 @@ impl BackendConfig {
     }
 
     /// Set the device ID.
+    #[deprecated(
+        note = "MNN 3.6.1 BackendConfig does not support device_id; session creation returns Unsupported"
+    )]
     pub fn with_device_id(mut self, id: i32) -> Self {
         self.device_id = Some(id);
         self
@@ -610,5 +729,40 @@ mod tests {
         let config = BackendConfig::default();
         assert_eq!(config.backend_type, BackendType::CPU);
         assert!(config.device_id.is_none());
+    }
+
+    #[test]
+    fn backend_capability_distinguishes_build_state_from_runtime_probe() {
+        let capability = BackendType::Vulkan.capability();
+
+        assert_eq!(capability.adapter_enabled, cfg!(feature = "vulkan"));
+        if cfg!(feature = "vulkan") {
+            assert_eq!(capability.availability, BackendAvailability::Unknown);
+            assert!(capability.reason.unwrap().contains("native MNN artifact"));
+        } else {
+            assert_eq!(capability.availability, BackendAvailability::NotConfigured);
+            assert!(capability.reason.unwrap().contains("not enabled"));
+        }
+    }
+
+    #[cfg(feature = "module")]
+    #[test]
+    fn public_mnn_runtime_manager_probe_confirms_cpu_creator() {
+        assert!(BackendType::CPU.probe_native_compiled().unwrap());
+        assert_eq!(
+            BackendType::CPU.probe_native_runtime().unwrap(),
+            BackendType::CPU
+        );
+    }
+
+    #[cfg(feature = "module")]
+    #[test]
+    fn unknown_device_info_key_returns_absence_not_provider_failure() {
+        assert_eq!(
+            BackendType::CPU
+                .device_info("not_a_real_mnn_device_key")
+                .unwrap(),
+            None
+        );
     }
 }

@@ -7,6 +7,20 @@ pub enum AcquisitionMode {
     Prebuilt,
 }
 
+/// Public MNN headers required by an optional wrapper subsystem.
+pub fn optional_module_headers(module: &str) -> Result<&'static [&'static str], String> {
+    match module {
+        "module" => Ok(&[
+            "MNN/expr/Module.hpp",
+            "MNN/expr/Expr.hpp",
+            "MNN/expr/Executor.hpp",
+        ]),
+        "runtime" => Ok(&["MNN/Interpreter.hpp"]),
+        "llm" => Ok(&["llm/llm.hpp"]),
+        _ => Err(format!("unknown optional MNN module `{module}`")),
+    }
+}
+
 /// Return whether static linking is selected, requiring exactly one link mode.
 pub fn validate_link_mode(static_link: bool, dynamic_link: bool) -> Result<bool, String> {
     match (static_link, dynamic_link) {
@@ -607,5 +621,21 @@ mod tests {
             ]
         );
         assert!(parse_index_paths(b"not-an-index-record").is_err());
+    }
+
+    #[test]
+    fn optional_module_features_require_their_public_header_families() {
+        assert_eq!(
+            optional_module_headers("module").unwrap(),
+            &[
+                "MNN/expr/Module.hpp",
+                "MNN/expr/Expr.hpp",
+                "MNN/expr/Executor.hpp"
+            ]
+        );
+        assert_eq!(
+            optional_module_headers("runtime").unwrap(),
+            &["MNN/Interpreter.hpp"]
+        );
     }
 }

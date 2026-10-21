@@ -95,7 +95,8 @@ mod backend;
 #[allow(deprecated)]
 pub use backend::{
     available_backends, is_backend_available, native_version_info, version, BackendAvailability,
-    BackendCapabilities, BackendConfig, BackendType, DataType, NativeVersionInfo,
+    BackendCapabilities, BackendCapability, BackendConfig, BackendType, DataType,
+    NativeVersionInfo,
 };
 
 mod config;
@@ -131,6 +132,11 @@ mod runtime;
 #[cfg(feature = "runtime")]
 pub use runtime::{InterpreterRuntimeExt, RuntimeInfo};
 
+#[cfg(feature = "module")]
+mod module;
+#[cfg(feature = "module")]
+pub use module::{Module, ModuleConfig, Variable, VariableInfo};
+
 // LLM inference support (requires building MNN from source with MNN_BUILD_LLM=ON)
 #[cfg(feature = "llm")]
 mod llm;
@@ -158,7 +164,7 @@ pub mod prelude {
     //! use mnn_oxide::prelude::*;
     //! ```
 
-    pub use crate::backend::{BackendType, DataType};
+    pub use crate::backend::{BackendCapability, BackendType, DataType};
     pub use crate::config::{
         DataFormat, MemoryMode, PowerMode, PrecisionMode, ScheduleConfig, ScheduleConfigBuilder,
     };
@@ -168,6 +174,8 @@ pub mod prelude {
     pub use crate::interpreter::Interpreter;
     #[cfg(feature = "llm")]
     pub use crate::llm::{ChatMessage, Embedding, Llm, LlmPerformance, LlmStatus};
+    #[cfg(feature = "module")]
+    pub use crate::module::{Module, ModuleConfig, Variable, VariableInfo};
     #[cfg(feature = "runtime")]
     pub use crate::runtime::RuntimeInfo;
     pub use crate::session::Session;
@@ -192,5 +200,29 @@ mod tests {
             BackendType::CPU.availability(),
             BackendAvailability::Available
         );
+    }
+}
+
+#[cfg(all(test, feature = "module"))]
+mod module_api_tests {
+    use super::*;
+
+    #[test]
+    fn input_variable_round_trips_float_data_with_shape_metadata() {
+        let mut input = Variable::input(&[2], DataFormat::Nchw, DataType::Float32).unwrap();
+        input.write_f32(&[1.25, -3.5]).unwrap();
+
+        assert_eq!(input.info().unwrap().shape, vec![2]);
+        assert_eq!(input.read_f32().unwrap(), vec![1.25, -3.5]);
+    }
+
+    #[test]
+    fn expression_add_keeps_shape_and_returns_owned_result() {
+        let mut input = Variable::input(&[2], DataFormat::Nchw, DataType::Float32).unwrap();
+        input.write_f32(&[1.0, 4.0]).unwrap();
+        let rhs = Variable::constant_f32(&[2], DataFormat::Nchw, &[2.0, 3.0]).unwrap();
+        let output = input.add(&rhs).unwrap();
+        assert_eq!(output.info().unwrap().shape, vec![2]);
+        assert_eq!(output.read_f32().unwrap(), vec![3.0, 7.0]);
     }
 }

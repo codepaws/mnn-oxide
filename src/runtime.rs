@@ -4,6 +4,7 @@
 //! which can improve memory efficiency and performance when running multiple models.
 
 use crate::backend::BackendType;
+use crate::config::ScheduleConfig;
 use crate::error::{native_error, MnnError, MnnResult};
 use crate::interpreter::Interpreter;
 use crate::session::Session;
@@ -72,7 +73,23 @@ impl RuntimeInfo {
     /// Runtime manager requires MNN to be built with runtime support.
     /// If not available, this will return an error.
     pub fn new(backend_type: BackendType, num_threads: i32) -> MnnResult<Self> {
-        let inner = unsafe { mnn_runtime_manager_create(backend_type.to_mnn_type(), num_threads) };
+        let config =
+            ScheduleConfig::with_backend(backend_type).num_threads(num_threads.max(0) as u32);
+        Self::with_config(config)
+    }
+
+    /// Create a shared runtime manager with the complete backend schedule configuration.
+    pub fn with_config(config: ScheduleConfig) -> MnnResult<Self> {
+        let (memory_mode, power_mode, precision_mode) = config.backend_config.native_values()?;
+        let inner = unsafe {
+            mnn_runtime_manager_create_v2(
+                config.backend_config.backend_type.to_mnn_type(),
+                config.num_threads as i32,
+                memory_mode,
+                power_mode,
+                precision_mode,
+            )
+        };
 
         if inner.is_null() {
             return Err(native_error(
@@ -101,12 +118,16 @@ impl RuntimeInfo {
         interpreter: &Interpreter,
         config: crate::config::ScheduleConfig,
     ) -> MnnResult<Session> {
+        let (memory_mode, power_mode, precision_mode) = config.backend_config.native_values()?;
         unsafe {
-            let inner = mnn_interpreter_create_session_with_runtime(
+            let inner = mnn_interpreter_create_session_with_runtime_v2(
                 interpreter.inner(),
                 self.inner.inner,
                 config.backend_config.backend_type.to_mnn_type(),
                 config.num_threads as i32,
+                memory_mode,
+                power_mode,
+                precision_mode,
             );
 
             if inner.is_null() {

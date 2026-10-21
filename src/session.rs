@@ -56,12 +56,16 @@ impl Session {
         interpreter_owner: Arc<InterpreterHandle>,
         config: ScheduleConfig,
     ) -> MnnResult<Self> {
+        let (memory_mode, power_mode, precision_mode) = config.backend_config.native_values()?;
         let interpreter = interpreter_owner.inner;
         let inner = unsafe {
-            mnn_oxide_sys::mnn_interpreter_create_session(
+            mnn_oxide_sys::mnn_interpreter_create_session_v2(
                 interpreter,
                 config.backend_config.backend_type.to_mnn_type(),
                 config.num_threads as i32,
+                memory_mode,
+                power_mode,
+                precision_mode,
             )
         };
 
