@@ -13,7 +13,7 @@
 //! cargo run --example basic_inference -- /path/to/model.mnn
 //! ```
 
-use mnn_rs::{prelude::*, BackendType, ScheduleConfig};
+use mnn_oxide::{prelude::*, BackendType, ScheduleConfig};
 
 fn main() -> Result<(), MnnError> {
     // Get model path from command line
@@ -52,25 +52,26 @@ fn main() -> Result<(), MnnError> {
     let input = session.get_input(None)?;
     let input_shape = input.shape();
     println!("  Input shape: {:?}", input_shape);
-    println!("  Input dtype: {}", input.dtype());
+    println!("  Input dtype: {}", input.dtype()?);
     println!("  Input format: {:?}", input.format());
-    println!("  Input element count: {}", input.element_count());
+    println!("  Input element count: {}", input.element_count()?);
 
     // ===== Step 4: Prepare Input Data =====
     println!("\n[Step 4] Preparing input data");
 
     // Calculate input size
-    let input_size = input.element_count() as usize;
+    let input_size = input.element_count()?;
     println!("  Input size: {} elements", input_size);
 
     // Create input data (all zeros for simplicity, or random values)
     // Using a pattern that's easy to verify: incremental values normalized to [0, 1]
-    let input_data: Vec<f32> = (0..input_size)
-        .map(|i| (i % 256) as f32 / 255.0)
-        .collect();
+    let input_data: Vec<f32> = (0..input_size).map(|i| (i % 256) as f32 / 255.0).collect();
 
     println!("  Generated {} input values", input_data.len());
-    println!("  Sample values: {:?}", &input_data[..10.min(input_data.len())]);
+    println!(
+        "  Sample values: {:?}",
+        &input_data[..10.min(input_data.len())]
+    );
 
     // Write data to input tensor
     input.write(&input_data)?;
@@ -88,9 +89,9 @@ fn main() -> Result<(), MnnError> {
     let output = session.get_output(None)?;
     let output_shape = output.shape();
     println!("  Output shape: {:?}", output_shape);
-    println!("  Output dtype: {}", output.dtype());
+    println!("  Output dtype: {}", output.dtype()?);
     println!("  Output format: {:?}", output.format());
-    println!("  Output element count: {}", output.element_count());
+    println!("  Output element count: {}", output.element_count()?);
 
     // ===== Step 7: Read Output Data =====
     println!("\n[Step 7] Reading output data");
@@ -99,7 +100,10 @@ fn main() -> Result<(), MnnError> {
 
     // Print output statistics
     let min_val = output_data.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max_val = output_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let max_val = output_data
+        .iter()
+        .cloned()
+        .fold(f32::NEG_INFINITY, f32::max);
     let sum: f32 = output_data.iter().sum();
     let mean = sum / output_data.len() as f32;
 
@@ -119,14 +123,26 @@ fn main() -> Result<(), MnnError> {
 
     // Print first and last few values
     let preview_count = 5;
-    println!("\n  First {} values: {:?}", preview_count, &output_data[..preview_count.min(output_data.len())]);
+    println!(
+        "\n  First {} values: {:?}",
+        preview_count,
+        &output_data[..preview_count.min(output_data.len())]
+    );
     if output_data.len() > preview_count {
-        println!("  Last {} values: {:?}", preview_count, &output_data[output_data.len() - preview_count..]);
+        println!(
+            "  Last {} values: {:?}",
+            preview_count,
+            &output_data[output_data.len() - preview_count..]
+        );
     }
 
     // ===== Step 8: Session Statistics =====
     println!("\n[Step 8] Session statistics");
-    println!("  Memory usage: {} bytes ({:.2} MB)", session.memory_usage(), session.memory_usage() as f64 / 1024.0 / 1024.0);
+    println!(
+        "  Memory usage: {} bytes ({:.2} MB)",
+        session.memory_usage(),
+        session.memory_usage() as f64 / 1024.0 / 1024.0
+    );
     println!("  FLOPS: {:.2} M", session.flops());
 
     println!("\n=== Inference completed successfully! ===");

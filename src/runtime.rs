@@ -4,20 +4,44 @@
 //! which can improve memory efficiency and performance when running multiple models.
 
 use crate::backend::BackendType;
-use crate::error::{MnnError, MnnResult};
+use crate::config::ScheduleConfig;
+use crate::error::{native_error, MnnError, MnnResult};
 use crate::interpreter::Interpreter;
 use crate::session::Session;
-use mnn_rs_sys::*;
+use mnn_oxide_sys::*;
+use std::sync::Arc;
+
+pub(crate) struct RuntimeHandle {
+    pub(crate) inner: *mut MNNRuntimeManager,
+}
+
+impl Drop for RuntimeHandle {
+    fn drop(&mut self) {
+        if !self.inner.is_null() {
+            unsafe { mnn_runtime_manager_destroy(self.inner) };
+        }
+    }
+}
 
 /// Runtime manager for sharing resources across sessions.
 ///
 /// The runtime manager allows multiple sessions to share backend resources,
 /// which can reduce memory usage and improve performance when running
-/// multiple models on the same device.
+/// multiple models on the same device. `RuntimeInfo` and sessions that use it
+/// remain confined to their owning thread unless a future MNN guarantee
+/// supports broader sharing.
+///
+/// Runtime handles are confined to their owning thread until MNN documents
+/// cross-thread guarantees for this API.
+///
+/// ```compile_fail,E0277
+/// fn require_send<T: Send>() {}
+/// require_send::<mnn_oxide::RuntimeInfo>();
+/// ```
 ///
 /// # Example
 /// ```no_run
-/// use mnn_rs::{RuntimeInfo, Interpreter, ScheduleConfig};
+/// use mnn_oxide::{BackendType, Interpreter, InterpreterRuntimeExt, RuntimeInfo};
 ///
 /// // Create runtime manager for GPU
 /// let runtime = RuntimeInfo::new(BackendType::Auto, 4)?;
@@ -29,15 +53,11 @@ use mnn_rs_sys::*;
 /// // Create sessions sharing the same runtime
 /// let session1 = interpreter1.create_session_with_runtime(&runtime)?;
 /// let session2 = interpreter2.create_session_with_runtime(&runtime)?;
-/// # Ok::<(), mnn_rs::MnnError>(())
+/// # Ok::<(), mnn_oxide::MnnError>(())
 /// ```
 pub struct RuntimeInfo {
-    inner: *mut MNNRuntimeManager,
+    inner: Arc<RuntimeHandle>,
 }
-
-// Safety: RuntimeManager is thread-safe through MNN's internal synchronization
-unsafe impl Send for RuntimeInfo {}
-unsafe impl Sync for RuntimeInfo {}
 
 impl RuntimeInfo {
     /// Create a new runtime manager.
@@ -53,17 +73,36 @@ impl RuntimeInfo {
     /// Runtime manager requires MNN to be built with runtime support.
     /// If not available, this will return an error.
     pub fn new(backend_type: BackendType, num_threads: i32) -> MnnResult<Self> {
+        let config =
+            ScheduleConfig::with_backend(backend_type).num_threads(num_threads.max(0) as u32);
+        Self::with_config(config)
+    }
+
+    /// Create a shared runtime manager with the complete backend schedule configuration.
+    pub fn with_config(config: ScheduleConfig) -> MnnResult<Self> {
+        let (memory_mode, power_mode, precision_mode) = config.backend_config.native_values()?;
         let inner = unsafe {
-            mnn_runtime_manager_create(backend_type.to_mnn_type(), num_threads)
+            mnn_runtime_manager_create_v2(
+                config.backend_config.backend_type.to_mnn_type(),
+                config.num_threads as i32,
+                memory_mode,
+                power_mode,
+                precision_mode,
+            )
         };
 
         if inner.is_null() {
-            return Err(MnnError::internal(
-                "Failed to create runtime manager. MNN may not be built with runtime support."
+            return Err(native_error(
+                "Failed to create runtime manager",
+                MnnError::internal(
+                    "Failed to create runtime manager. MNN may not be built with runtime support.",
+                ),
             ));
         }
 
-        Ok(Self { inner })
+        Ok(Self {
+            inner: Arc::new(RuntimeHandle { inner }),
+        })
     }
 
     /// Create a session with this runtime manager.
@@ -79,38 +118,40 @@ impl RuntimeInfo {
         interpreter: &Interpreter,
         config: crate::config::ScheduleConfig,
     ) -> MnnResult<Session> {
+        let (memory_mode, power_mode, precision_mode) = config.backend_config.native_values()?;
         unsafe {
-            let inner = mnn_interpreter_create_session_with_runtime(
+            let inner = mnn_interpreter_create_session_with_runtime_v2(
                 interpreter.inner(),
-                self.inner,
+                self.inner.inner,
                 config.backend_config.backend_type.to_mnn_type(),
                 config.num_threads as i32,
+                memory_mode,
+                power_mode,
+                precision_mode,
             );
 
             if inner.is_null() {
-                return Err(MnnError::session_error("Failed to create session with runtime"));
+                return Err(native_error(
+                    "Failed to create session with runtime",
+                    MnnError::session_error("Failed to create session with runtime"),
+                ));
             }
 
-            Ok(Session::from_ptr(inner, interpreter.inner()))
+            Ok(Session::from_ptr_with_owners(
+                inner,
+                interpreter._owner.clone(),
+                self.inner.clone(),
+            ))
         }
     }
 
     /// Get the raw pointer to the underlying MNN RuntimeManager.
     ///
     /// # Safety
-    /// The returned pointer is owned by this RuntimeInfo and must not be freed.
+    /// The pointer is owned by the shared runtime handle and must not be freed.
+    /// It remains valid while this `RuntimeInfo` or any session created from it lives.
     pub unsafe fn as_ptr(&self) -> *const MNNRuntimeManager {
-        self.inner
-    }
-}
-
-impl Drop for RuntimeInfo {
-    fn drop(&mut self) {
-        if !self.inner.is_null() {
-            unsafe {
-                mnn_runtime_manager_destroy(self.inner);
-            }
-        }
+        self.inner.inner
     }
 }
 
@@ -135,8 +176,7 @@ pub trait InterpreterRuntimeExt {
 impl InterpreterRuntimeExt for Interpreter {
     fn create_session_with_runtime(&self, runtime: &RuntimeInfo) -> MnnResult<Session> {
         // Use default CPU config
-        let config = crate::config::ScheduleConfig::new()
-            .backend(BackendType::CPU);
+        let config = crate::config::ScheduleConfig::new().backend(BackendType::CPU);
         runtime.create_session(self, config)
     }
 }

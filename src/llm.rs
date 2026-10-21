@@ -29,8 +29,9 @@
 //! both wrappers are designed for single-threaded exclusive use (they are
 //! `!Send` and `!Sync`). For concurrent sessions, create multiple instances.
 
-use crate::error::{MnnError, MnnResult};
-use mnn_rs_sys::{MNNEmbedding, MNNLlm, MNNLlmContext};
+use crate::error::{native_error, MnnError, MnnResult};
+use crate::llm_callback::{stream_callback, CallbackState};
+use mnn_oxide_sys::{MNNEmbedding, MNNLlm, MNNLlmContext};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::marker::PhantomData;
 use std::path::Path;
@@ -123,9 +124,7 @@ pub struct Llm {
 
 impl std::fmt::Debug for Llm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Llm")
-            .field("inner", &self.inner)
-            .finish()
+        f.debug_struct("Llm").field("inner", &self.inner).finish()
     }
 }
 
@@ -141,11 +140,12 @@ impl Llm {
         let path_str = config_path.as_ref().to_string_lossy().into_owned();
         let c_path = CString::new(path_str.as_str())?;
         // SAFETY: `c_path` is a valid NUL-terminated string for the call.
-        let inner = unsafe { mnn_rs_sys::mnn_llm_create(c_path.as_ptr()) };
+        let inner = unsafe { mnn_oxide_sys::mnn_llm_create(c_path.as_ptr()) };
         if inner.is_null() {
-            return Err(MnnError::invalid_model(format!(
-                "Failed to create LLM from config: {path_str}"
-            )));
+            return Err(native_error(
+                "Failed to create LLM",
+                MnnError::invalid_model(format!("Failed to create LLM from config: {path_str}")),
+            ));
         }
         Ok(Self {
             inner,
@@ -157,7 +157,7 @@ impl Llm {
     pub fn load(&mut self) -> MnnResult<()> {
         check_bool(
             // SAFETY: `self.inner` is a valid LLM handle created by `create`.
-            unsafe { mnn_rs_sys::mnn_llm_load(self.inner) },
+            unsafe { mnn_oxide_sys::mnn_llm_load(self.inner) },
             "Failed to load LLM model",
         )
     }
@@ -175,7 +175,7 @@ impl Llm {
         let c_text = CString::new(text)?;
         // SAFETY: `c_text` is a valid NUL-terminated string for the call.
         let ptr = unsafe {
-            mnn_rs_sys::mnn_llm_response_text(
+            mnn_oxide_sys::mnn_llm_response_text(
                 self.inner,
                 c_text.as_ptr(),
                 max_new_tokens.unwrap_or(0),
@@ -214,7 +214,7 @@ impl Llm {
         // SAFETY: the two pointer arrays are valid for `n` elements and point
         // at NUL-terminated C strings that outlive the call.
         let ptr = unsafe {
-            mnn_rs_sys::mnn_llm_response_messages(
+            mnn_oxide_sys::mnn_llm_response_messages(
                 self.inner,
                 role_ptrs.as_ptr(),
                 content_ptrs.as_ptr(),
@@ -251,7 +251,7 @@ impl Llm {
             // SAFETY: `input_ids` and `out` are valid for the given lengths;
             // `out_n` is capacity-in / count-out.
             let ret = unsafe {
-                mnn_rs_sys::mnn_llm_generate_tokens(
+                mnn_oxide_sys::mnn_llm_generate_tokens(
                     self.inner,
                     input_ids.as_ptr(),
                     input_ids.len() as c_int,
@@ -261,9 +261,10 @@ impl Llm {
                 )
             };
             if ret < 0 {
-                return Err(MnnError::internal(format!(
-                    "LLM token generation failed with code {ret}"
-                )));
+                return Err(native_error(
+                    "LLM token generation failed",
+                    MnnError::internal(format!("LLM token generation failed with code {ret}")),
+                ));
             }
             let count = out_n as usize;
             if count <= capacity {
@@ -294,29 +295,20 @@ impl Llm {
     /// The closure is called synchronously from the current thread for the
     /// whole duration of the generation loop and is never moved across
     /// threads.
-    pub fn generate_stream<F>(&mut self, prompt: &str, max_tokens: i32, on_chunk: F) -> MnnResult<()>
+    pub fn generate_stream<F>(
+        &mut self,
+        prompt: &str,
+        max_tokens: i32,
+        on_chunk: F,
+    ) -> MnnResult<()>
     where
         F: FnMut(&str),
     {
-        // SAFETY: the concrete monomorphization has the exact C callback ABI.
-        unsafe extern "C" fn stream_cb<F>(text: *const c_char, userdata: *mut c_void)
-        where
-            F: FnMut(&str),
-        {
-            if text.is_null() || userdata.is_null() {
-                return;
-            }
-            // SAFETY: `userdata` points at the `Box<F>` owned by the calling
-            // `generate_stream`, which stays alive for the whole loop.
-            let cb: &mut F = unsafe { &mut *(userdata as *mut F) };
-            // SAFETY: `text` is a NUL-terminated string owned by MNN for the
-            // duration of the callback.
-            let chunk = unsafe { CStr::from_ptr(text) }.to_string_lossy();
-            cb(&chunk);
-        }
-
-        let mut boxed = Box::new(on_chunk);
-        let userdata: *mut c_void = (&mut *boxed as *mut F).cast();
+        let mut boxed = Box::new(CallbackState {
+            on_chunk,
+            panicked: false,
+        });
+        let userdata: *mut c_void = (&mut *boxed as *mut CallbackState<F>).cast();
         let c_prompt = CString::new(prompt)?;
 
         // SAFETY: `boxed` owns the closure and stays alive for the whole
@@ -326,20 +318,27 @@ impl Llm {
         // feeds the prompt (prefill) and may already emit text through the
         // callback.
         unsafe {
-            mnn_rs_sys::mnn_llm_generate_init(
+            mnn_oxide_sys::mnn_llm_generate_init(
                 self.inner,
                 c_prompt.as_ptr(),
-                Some(stream_cb::<F>),
+                Some(stream_callback::<F>),
                 userdata,
                 std::ptr::null(),
             );
-            while !mnn_rs_sys::mnn_llm_stoped(self.inner) {
-                mnn_rs_sys::mnn_llm_generate_step(self.inner, max_tokens);
+            while !boxed.panicked && !mnn_oxide_sys::mnn_llm_stoped(self.inner) {
+                if mnn_oxide_sys::mnn_llm_generate_step(self.inner, max_tokens) {
+                    break;
+                }
             }
         }
 
+        let panicked = boxed.panicked;
         drop(boxed);
-        Ok(())
+        if panicked {
+            Err(MnnError::internal("LLM stream callback panicked"))
+        } else {
+            Ok(())
+        }
     }
 
     /// Encode a text string into token IDs using the model tokenizer.
@@ -348,10 +347,13 @@ impl Llm {
         let mut out_n: c_int = 0;
         // SAFETY: `c_text` is a valid NUL-terminated string for the call.
         let ptr = unsafe {
-            mnn_rs_sys::mnn_llm_tokenizer_encode(self.inner, c_text.as_ptr(), &mut out_n)
+            mnn_oxide_sys::mnn_llm_tokenizer_encode(self.inner, c_text.as_ptr(), &mut out_n)
         };
         if ptr.is_null() {
-            return Err(MnnError::internal("LLM tokenizer encode failed"));
+            return Err(native_error(
+                "LLM tokenizer encode failed",
+                MnnError::internal("LLM tokenizer encode failed"),
+            ));
         }
         // SAFETY: the wrapper malloc'd `out_n` ints; ownership is transferred
         // to `read_int_array`, which frees it exactly once.
@@ -362,21 +364,22 @@ impl Llm {
     pub fn decode(&self, token: i32) -> MnnResult<String> {
         // SAFETY: the wrapper returns a malloc'd string (or NULL); ownership
         // is transferred to `read_c_string`, which frees it exactly once.
-        let ptr = unsafe { mnn_rs_sys::mnn_llm_tokenizer_decode(self.inner, token) };
+        let ptr = unsafe { mnn_oxide_sys::mnn_llm_tokenizer_decode(self.inner, token) };
         unsafe { read_c_string(ptr) }
     }
 
     /// Check whether a token ID is a stop token for this model.
     pub fn is_stop(&self, token: i32) -> bool {
         // SAFETY: `self.inner` is a valid LLM handle created by `create`.
-        unsafe { mnn_rs_sys::mnn_llm_is_stop(self.inner, token) }
+        unsafe { mnn_oxide_sys::mnn_llm_is_stop(self.inner, token) }
     }
 
     /// Apply the model's chat template to a single user message.
     pub fn apply_chat_template(&self, text: &str) -> MnnResult<String> {
         let c_text = CString::new(text)?;
         // SAFETY: `c_text` is a valid NUL-terminated string for the call.
-        let ptr = unsafe { mnn_rs_sys::mnn_llm_apply_chat_template(self.inner, c_text.as_ptr()) };
+        let ptr =
+            unsafe { mnn_oxide_sys::mnn_llm_apply_chat_template(self.inner, c_text.as_ptr()) };
         // SAFETY: the wrapper returns a malloc'd string (or NULL); ownership
         // is transferred to `read_c_string`, which frees it exactly once.
         unsafe { read_c_string(ptr) }
@@ -390,7 +393,7 @@ impl Llm {
         let c_json = CString::new(json)?;
         check_bool(
             // SAFETY: `c_json` is a valid NUL-terminated string for the call.
-            unsafe { mnn_rs_sys::mnn_llm_set_config(self.inner, c_json.as_ptr()) },
+            unsafe { mnn_oxide_sys::mnn_llm_set_config(self.inner, c_json.as_ptr()) },
             "Failed to set LLM config",
         )
     }
@@ -399,20 +402,20 @@ impl Llm {
     pub fn dump_config(&self) -> MnnResult<String> {
         // SAFETY: the wrapper returns a malloc'd string (or NULL); ownership
         // is transferred to `read_c_string`, which frees it exactly once.
-        let ptr = unsafe { mnn_rs_sys::mnn_llm_dump_config(self.inner) };
+        let ptr = unsafe { mnn_oxide_sys::mnn_llm_dump_config(self.inner) };
         unsafe { read_c_string(ptr) }
     }
 
     /// Reset the generation state (history and counters).
     pub fn reset(&mut self) {
         // SAFETY: `self.inner` is a valid LLM handle created by `create`.
-        unsafe { mnn_rs_sys::mnn_llm_reset(self.inner) };
+        unsafe { mnn_oxide_sys::mnn_llm_reset(self.inner) };
     }
 
     /// Check whether KV-cache reuse across turns is enabled.
     pub fn reuse_kv(&self) -> bool {
         // SAFETY: `self.inner` is a valid LLM handle created by `create`.
-        unsafe { mnn_rs_sys::mnn_llm_reuse_kv(self.inner) }
+        unsafe { mnn_oxide_sys::mnn_llm_reuse_kv(self.inner) }
     }
 
     /// Get the current generation status.
@@ -421,7 +424,7 @@ impl Llm {
     /// are mapped to [`LlmStatus::InternalError`].
     pub fn status(&self) -> LlmStatus {
         // SAFETY: `self.inner` is a valid LLM handle created by `create`.
-        let raw = unsafe { mnn_rs_sys::mnn_llm_get_status(self.inner) };
+        let raw = unsafe { mnn_oxide_sys::mnn_llm_get_status(self.inner) };
         LlmStatus::try_from(raw).unwrap_or(LlmStatus::InternalError)
     }
 
@@ -432,10 +435,11 @@ impl Llm {
     pub fn performance(&self) -> MnnResult<LlmPerformance> {
         let mut ctx: MNNLlmContext = unsafe { std::mem::zeroed() };
         // SAFETY: `ctx` is a valid, initialized `MNNLlmContext` buffer.
-        let ret = unsafe { mnn_rs_sys::mnn_llm_get_context(self.inner, &mut ctx) };
+        let ret = unsafe { mnn_oxide_sys::mnn_llm_get_context(self.inner, &mut ctx) };
         if ret != 0 {
-            return Err(MnnError::internal(
-                "Failed to read LLM context (model not loaded?)",
+            return Err(native_error(
+                "Failed to read LLM context",
+                MnnError::internal("Failed to read LLM context (model not loaded?)"),
             ));
         }
         Ok(LlmPerformance {
@@ -455,7 +459,7 @@ impl Drop for Llm {
         if !self.inner.is_null() {
             // SAFETY: `inner` was created by `mnn_llm_create` and is destroyed
             // exactly once here.
-            unsafe { mnn_rs_sys::mnn_llm_destroy(self.inner) };
+            unsafe { mnn_oxide_sys::mnn_llm_destroy(self.inner) };
         }
     }
 }
@@ -492,11 +496,14 @@ impl Embedding {
         let path_str = config_path.as_ref().to_string_lossy().into_owned();
         let c_path = CString::new(path_str.as_str())?;
         // SAFETY: `c_path` is a valid NUL-terminated string for the call.
-        let inner = unsafe { mnn_rs_sys::mnn_embedding_create(c_path.as_ptr(), load) };
+        let inner = unsafe { mnn_oxide_sys::mnn_embedding_create(c_path.as_ptr(), load) };
         if inner.is_null() {
-            return Err(MnnError::invalid_model(format!(
-                "Failed to create embedding model from config: {path_str}"
-            )));
+            return Err(native_error(
+                "Failed to create embedding model",
+                MnnError::invalid_model(format!(
+                    "Failed to create embedding model from config: {path_str}"
+                )),
+            ));
         }
         Ok(Self {
             inner,
@@ -509,7 +516,7 @@ impl Embedding {
     /// Returns 0 if the dimension is unavailable (negative raw value).
     pub fn dim(&self) -> usize {
         // SAFETY: `self.inner` is a valid embedding handle created by `create`.
-        let d = unsafe { mnn_rs_sys::mnn_embedding_dim(self.inner) };
+        let d = unsafe { mnn_oxide_sys::mnn_embedding_dim(self.inner) };
         if d < 0 {
             0
         } else {
@@ -530,7 +537,7 @@ impl Embedding {
         // SAFETY: `c_text` is a valid NUL-terminated string and `out` has
         // `dim` capacity, matching `out_cap`.
         let count = unsafe {
-            mnn_rs_sys::mnn_embedding_txt(
+            mnn_oxide_sys::mnn_embedding_txt(
                 self.inner,
                 c_text.as_ptr(),
                 out.as_mut_ptr(),
@@ -538,9 +545,10 @@ impl Embedding {
             )
         };
         if count < 0 {
-            return Err(MnnError::internal(format!(
-                "Embedding text failed with code {count}"
-            )));
+            return Err(native_error(
+                "Embedding text failed",
+                MnnError::internal(format!("Embedding text failed with code {count}")),
+            ));
         }
         out.truncate((count as usize).min(dim));
         Ok(out)
@@ -558,7 +566,7 @@ impl Embedding {
         // SAFETY: `ids` is valid for `ids.len()` elements and `out` has `dim`
         // capacity, matching `out_cap`.
         let count = unsafe {
-            mnn_rs_sys::mnn_embedding_ids(
+            mnn_oxide_sys::mnn_embedding_ids(
                 self.inner,
                 ids.as_ptr(),
                 ids.len() as c_int,
@@ -567,9 +575,10 @@ impl Embedding {
             )
         };
         if count < 0 {
-            return Err(MnnError::internal(format!(
-                "Embedding ids failed with code {count}"
-            )));
+            return Err(native_error(
+                "Embedding ids failed",
+                MnnError::internal(format!("Embedding ids failed with code {count}")),
+            ));
         }
         out.truncate((count as usize).min(dim));
         Ok(out)
@@ -614,7 +623,7 @@ impl Drop for Embedding {
         if !self.inner.is_null() {
             // SAFETY: `inner` was created by `mnn_embedding_create` and is
             // destroyed exactly once here.
-            unsafe { mnn_rs_sys::mnn_embedding_destroy(self.inner) };
+            unsafe { mnn_oxide_sys::mnn_embedding_destroy(self.inner) };
         }
     }
 }
@@ -625,7 +634,7 @@ fn check_bool(ok: bool, context: &str) -> MnnResult<()> {
     if ok {
         Ok(())
     } else {
-        Err(MnnError::internal(context))
+        Err(native_error(context, MnnError::internal(context)))
     }
 }
 
@@ -636,12 +645,17 @@ fn check_bool(ok: bool, context: &str) -> MnnResult<()> {
 /// with `strdup`), and must be freed exactly once.
 unsafe fn read_c_string(ptr: *mut c_char) -> MnnResult<String> {
     if ptr.is_null() {
-        return Err(MnnError::internal("LLM returned a null string"));
+        return Err(native_error(
+            "LLM returned a null string",
+            MnnError::internal("LLM returned a null string"),
+        ));
     }
     // SAFETY: the caller guarantees `ptr` is a valid NUL-terminated string.
-    let text = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    let text = unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned();
     // SAFETY: the caller guarantees `ptr` was allocated for `mnn_string_free`.
-    unsafe { mnn_rs_sys::mnn_string_free(ptr) };
+    unsafe { mnn_oxide_sys::mnn_string_free(ptr) };
     Ok(text)
 }
 
@@ -654,7 +668,7 @@ unsafe fn read_int_array(ptr: *mut c_int, len: usize) -> Vec<i32> {
     // SAFETY: the caller guarantees `ptr` is valid for `len` elements.
     let data = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
     // SAFETY: the caller guarantees `ptr` was allocated for `mnn_int_array_free`.
-    unsafe { mnn_rs_sys::mnn_int_array_free(ptr) };
+    unsafe { mnn_oxide_sys::mnn_int_array_free(ptr) };
     data
 }
 
@@ -666,10 +680,19 @@ mod tests {
     fn llm_status_roundtrip() {
         assert!(matches!(LlmStatus::try_from(-1), Ok(LlmStatus::NotLoaded)));
         assert!(matches!(LlmStatus::try_from(0), Ok(LlmStatus::Running)));
-        assert!(matches!(LlmStatus::try_from(1), Ok(LlmStatus::NormalFinished)));
-        assert!(matches!(LlmStatus::try_from(2), Ok(LlmStatus::MaxTokensFinished)));
+        assert!(matches!(
+            LlmStatus::try_from(1),
+            Ok(LlmStatus::NormalFinished)
+        ));
+        assert!(matches!(
+            LlmStatus::try_from(2),
+            Ok(LlmStatus::MaxTokensFinished)
+        ));
         assert!(matches!(LlmStatus::try_from(3), Ok(LlmStatus::UserCancel)));
-        assert!(matches!(LlmStatus::try_from(4), Ok(LlmStatus::InternalError)));
+        assert!(matches!(
+            LlmStatus::try_from(4),
+            Ok(LlmStatus::InternalError)
+        ));
         assert!(matches!(LlmStatus::try_from(5), Ok(LlmStatus::Timeout)));
         assert!(LlmStatus::try_from(42).is_err());
     }

@@ -1,17 +1,17 @@
 [workspace]
 resolver = "2"
-members = ["mnn-sys"]
+members = ["mnn-oxide-sys"]
 
 [workspace.package]
 version = "0.1.7"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/wapznw/mnn-rs"
-homepage = "https://github.com/wapznw/mnn-rs"
+repository = "https://github.com/codepaws/mnn-oxide"
+homepage = "https://github.com/codepaws/mnn-oxide"
 description = "Rust bindings for Alibaba MNN (Mobile Neural Network) inference engine"
 keywords = ["mnn", "neural-network", "inference", "deep-learning", "machine-learning"]
 categories = ["api-bindings", "algorithms", "science"]
-rust-version = "1.70"
+rust-version = "1.88"
 authors = ["DJ.W <wapznw@gmail.com>"]
 
 [workspace.dependencies]
@@ -22,7 +22,7 @@ cmake = "0.1"
 pkg-config = "0.3"
 
 [package]
-name = "mnn-rs"
+name = "mnn-oxide"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -34,74 +34,73 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-documentation = "https://docs.rs/mnn-rs"
+documentation = "https://docs.rs/mnn-oxide"
 
 [features]
-default = ["cpu", "static", "use-prebuilt"]
+default = ["cpu", "dynamic"]
 
 # Linking method
-static = ["mnn-rs-sys/static"]
-dynamic = ["mnn-rs-sys/dynamic"]
+static = ["mnn-oxide-sys/static"]
+dynamic = ["mnn-oxide-sys/dynamic"]
 
 # Backend support
-cpu = ["mnn-rs-sys/cpu"]
-cuda = ["mnn-rs-sys/cuda"]
-opencl = ["mnn-rs-sys/opencl"]
-vulkan = ["mnn-rs-sys/vulkan"]
-metal = ["mnn-rs-sys/metal"]
+cpu = ["mnn-oxide-sys/cpu"]
+cuda = ["mnn-oxide-sys/cuda"]
+opencl = ["mnn-oxide-sys/opencl"]
+vulkan = ["mnn-oxide-sys/vulkan"]
+metal = ["mnn-oxide-sys/metal"]
 
 # Precision support
-fp16 = ["mnn-rs-sys/fp16"]
+fp16 = ["mnn-oxide-sys/fp16", "dep:half"]
 bf16 = []
-int8 = ["mnn-rs-sys/int8"]
+int8 = ["mnn-oxide-sys/int8"]
 
 # Quantization
-quantization = ["mnn-rs-sys/quantization"]
+quantization = ["mnn-oxide-sys/quantization"]
 
 # x86 SIMD optimizations
-sse = ["mnn-rs-sys/sse"]
-avx2 = ["mnn-rs-sys/avx2"]
-avx512 = ["mnn-rs-sys/avx512"]
+sse = ["mnn-oxide-sys/sse"]
+avx2 = ["mnn-oxide-sys/avx2"]
+avx512 = ["mnn-oxide-sys/avx512"]
 
 # Async support
-async = ["dep:tokio"]
+async = []
 
 # Build options
-# Use prebuilt binaries (default) - downloads from GitHub Releases
-use-prebuilt = ["mnn-rs-sys/use-prebuilt"]
-# Build from source - requires cmake and C++ compiler
-build-from-source = ["mnn-rs-sys/build-from-source"]
+# Opt-in user-supplied artifact; requires explicit URL, digest, target, version, and cache.
+use-prebuilt = ["mnn-oxide-sys/use-prebuilt"]
+# Explicit source build from an existing checkout at a full commit SHA.
+build-from-source = ["mnn-oxide-sys/build-from-source"]
 # Use system-installed MNN
-system-mnn = ["mnn-rs-sys/system-mnn"]
+system-mnn = ["mnn-oxide-sys/system-mnn"]
 
 # Extended API features
 # Image processing support (requires MNN with CV module)
-image-process = ["mnn-rs-sys/image-process"]
+image-process = ["mnn-oxide-sys/image-process"]
 # Dynamic computation graph support (requires MNN with Expr/Module)
-module = ["mnn-rs-sys/module"]
+module = ["mnn-oxide-sys/module"]
 # Multi-session runtime sharing (requires MNN with RuntimeManager)
-runtime = ["mnn-rs-sys/runtime"]
-# LLM large language model inference (prebuilt binaries ship the LLM engine;
-# build-from-source also works and adds MNN_BUILD_LLM=ON)
-llm = ["mnn-rs-sys/llm"]
+runtime = ["mnn-oxide-sys/runtime"]
+# LLM large language model inference (requires a compatible explicit MNN build)
+llm = ["mnn-oxide-sys/llm"]
 
 # Platform specific (usually auto-detected)
-android = ["mnn-rs-sys/android"]
-ios = ["mnn-rs-sys/ios"]
+android = ["mnn-oxide-sys/android"]
+ios = ["mnn-oxide-sys/ios"]
 embedded = []
 
 [dependencies]
-# default-features = false: the sys crate's defaults include 'static', which
-# would otherwise conflict with the 'dynamic' feature via Cargo feature
-# unification. mnn-rs's own default features forward cpu/static/use-prebuilt
-# explicitly, so default builds are unchanged.
-mnn-rs-sys = { path = "mnn-sys", version = "0.1", package = "mnn-rs-sys", default-features = false }
+# default-features = false prevents implicit sys-crate features; this crate
+# forwards the requested link mode and never acquires MNN by default.
+mnn-oxide-sys = { path = "mnn-oxide-sys", version = "0.1", package = "mnn-oxide-sys", default-features = false }
 thiserror = { workspace = true }
-tokio = { workspace = true, optional = true, features = ["rt", "sync"] }
+half = { version = "2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = "3.0"
+sha2 = "0.10"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 [package.metadata.docs.rs]
 # docs.rs doesn't have network access or cmake, so native library linking is skipped
@@ -115,12 +114,15 @@ name = "basic_inference"
 required-features = ["cpu"]
 
 [[example]]
+name = "model_smoke"
+required-features = ["cpu"]
+
+[[example]]
 name = "async_inference"
 required-features = ["async"]
 
 [[example]]
 name = "gpu_backend"
-required-features = ["cuda"]
 
 [[example]]
 name = "image_process"

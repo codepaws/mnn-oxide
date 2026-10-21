@@ -5,26 +5,47 @@
 
 use crate::config::ScheduleConfig;
 use crate::config::SessionMode;
-use crate::error::{MnnError, MnnResult};
+use crate::error::{native_error, MnnError, MnnResult};
 use crate::session::Session;
 use crate::tensor::Tensor;
-use mnn_rs_sys::MNNInterpreter;
-use std::ffi::CString;
+use mnn_oxide_sys::MNNInterpreter;
 use std::ffi::CStr;
+use std::ffi::CString;
 use std::path::Path;
+use std::sync::Arc;
+
+pub(crate) struct InterpreterHandle {
+    pub(crate) inner: *mut MNNInterpreter,
+    pub(crate) _model_buffer: Option<Box<[u8]>>,
+}
+
+impl Drop for InterpreterHandle {
+    fn drop(&mut self) {
+        if !self.inner.is_null() {
+            unsafe { mnn_oxide_sys::mnn_interpreter_destroy(self.inner) };
+        }
+    }
+}
 
 /// A model interpreter that holds a loaded neural network model.
 ///
 /// The interpreter is the main entry point for MNN inference. It manages
-/// the model and can create multiple sessions for concurrent inference.
+/// the model and can create multiple sessions for use from its owning thread.
 ///
 /// # Thread Safety
-/// The interpreter is thread-safe and can be shared across threads.
-/// Multiple sessions can be created from a single interpreter.
+/// The interpreter is confined to the thread where it is used. MNN does not
+/// provide a general guarantee that interpreter handles can move between
+/// threads. Multiple sessions may be created from one interpreter when all
+/// access remains on the same thread.
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<mnn_oxide::Interpreter>();
+/// ```
 ///
 /// # Example
 /// ```no_run
-/// use mnn_rs::{Interpreter, ScheduleConfig, BackendType};
+/// use mnn_oxide::{Interpreter, ScheduleConfig, BackendType};
 ///
 /// // Load a model
 /// let interpreter = Interpreter::from_file("model.mnn")?;
@@ -45,17 +66,14 @@ use std::path::Path;
 ///
 /// // Get output
 /// let output = session.get_output(None)?;
-/// # Ok::<(), mnn_rs::MnnError>(())
+/// # Ok::<(), mnn_oxide::MnnError>(())
 /// ```
 pub struct Interpreter {
     inner: *mut MNNInterpreter,
     /// Model path (if loaded from file)
     model_path: Option<String>,
+    pub(crate) _owner: Arc<InterpreterHandle>,
 }
-
-// Safety: Interpreter operations are thread-safe through MNN's internal synchronization
-unsafe impl Send for Interpreter {}
-unsafe impl Sync for Interpreter {}
 
 impl Interpreter {
     /// Create a new interpreter from a model file.
@@ -68,10 +86,10 @@ impl Interpreter {
     ///
     /// # Example
     /// ```no_run
-    /// use mnn_rs::Interpreter;
+    /// use mnn_oxide::Interpreter;
     ///
     /// let interpreter = Interpreter::from_file("model.mnn")?;
-    /// # Ok::<(), mnn_rs::MnnError>(())
+    /// # Ok::<(), mnn_oxide::MnnError>(())
     /// ```
     pub fn from_file<P: AsRef<Path>>(path: P) -> MnnResult<Self> {
         let path_str = path.as_ref().to_string_lossy().into_owned();
@@ -83,18 +101,22 @@ impl Interpreter {
 
         let c_path = CString::new(path_str.as_str())?;
 
-        let inner = unsafe { mnn_rs_sys::mnn_interpreter_create_from_file(c_path.as_ptr()) };
+        let inner = unsafe { mnn_oxide_sys::mnn_interpreter_create_from_file(c_path.as_ptr()) };
 
         if inner.is_null() {
-            return Err(MnnError::invalid_model(format!(
-                "Failed to load model from: {}",
-                path_str
-            )));
+            return Err(native_error(
+                "Failed to load model",
+                MnnError::invalid_model(format!("Failed to load model from: {path_str}")),
+            ));
         }
 
         Ok(Self {
             inner,
             model_path: Some(path_str),
+            _owner: Arc::new(InterpreterHandle {
+                inner,
+                _model_buffer: None,
+            }),
         })
     }
 
@@ -111,31 +133,39 @@ impl Interpreter {
     ///
     /// # Example
     /// ```ignore
-    /// use mnn_rs::Interpreter;
+    /// use mnn_oxide::Interpreter;
     ///
     /// let model_data = include_bytes!("model.mnn");
     /// let interpreter = Interpreter::from_bytes(model_data)?;
-    /// # Ok::<(), mnn_rs::MnnError>(())
+    /// # Ok::<(), mnn_oxide::MnnError>(())
     /// ```
     pub fn from_bytes(data: &[u8]) -> MnnResult<Self> {
         if data.is_empty() {
             return Err(MnnError::invalid_model("Model data is empty"));
         }
 
+        let model_buffer = data.to_vec().into_boxed_slice();
         let inner = unsafe {
-            mnn_rs_sys::mnn_interpreter_create_from_buffer(
-                data.as_ptr() as *const std::ffi::c_void,
-                data.len(),
+            mnn_oxide_sys::mnn_interpreter_create_from_buffer(
+                model_buffer.as_ptr() as *const std::ffi::c_void,
+                model_buffer.len(),
             )
         };
 
         if inner.is_null() {
-            return Err(MnnError::invalid_model("Failed to load model from memory"));
+            return Err(native_error(
+                "Failed to load model from memory",
+                MnnError::invalid_model("Failed to load model from memory"),
+            ));
         }
 
         Ok(Self {
             inner,
             model_path: None,
+            _owner: Arc::new(InterpreterHandle {
+                inner,
+                _model_buffer: Some(model_buffer),
+            }),
         })
     }
 
@@ -150,7 +180,7 @@ impl Interpreter {
     /// # Returns
     /// A new session on success, or an error if session creation fails.
     pub fn create_session(&self, config: ScheduleConfig) -> MnnResult<Session> {
-        unsafe { Session::new(self.inner, config) }
+        Session::new(self._owner.clone(), config)
     }
 
     /// Get the model path (if loaded from file).
@@ -164,13 +194,11 @@ impl Interpreter {
     /// The business code string.
     pub fn business_code(&self) -> String {
         unsafe {
-            let ptr = mnn_rs_sys::mnn_interpreter_get_biz_code(self.inner);
+            let ptr = mnn_oxide_sys::mnn_interpreter_get_biz_code(self.inner);
             if ptr.is_null() {
                 return String::new();
             }
-            std::ffi::CStr::from_ptr(ptr)
-                .to_string_lossy()
-                .into_owned()
+            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
     }
 
@@ -180,13 +208,11 @@ impl Interpreter {
     /// The UUID string.
     pub fn uuid(&self) -> String {
         unsafe {
-            let ptr = mnn_rs_sys::mnn_interpreter_get_uuid(self.inner);
+            let ptr = mnn_oxide_sys::mnn_interpreter_get_uuid(self.inner);
             if ptr.is_null() {
                 return String::new();
             }
-            std::ffi::CStr::from_ptr(ptr)
-                .to_string_lossy()
-                .into_owned()
+            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
     }
 
@@ -194,7 +220,7 @@ impl Interpreter {
     ///
     /// # Safety
     /// The returned pointer is owned by this Interpreter and must not be freed.
-    pub fn inner(&self) -> *mut mnn_rs_sys::MNNInterpreter {
+    pub fn inner(&self) -> *mut mnn_oxide_sys::MNNInterpreter {
         self.inner
     }
 
@@ -208,7 +234,7 @@ impl Interpreter {
     /// * `mode` - The session mode to set
     pub fn set_session_mode(&self, mode: SessionMode) {
         unsafe {
-            mnn_rs_sys::mnn_interpreter_set_session_mode(self.inner, mode.to_mnn());
+            mnn_oxide_sys::mnn_interpreter_set_session_mode(self.inner, mode.to_mnn());
         }
     }
 
@@ -221,7 +247,11 @@ impl Interpreter {
         let path_str = path.as_ref().to_string_lossy();
         if let Ok(c_path) = CString::new(path_str.as_ref()) {
             unsafe {
-                mnn_rs_sys::mnn_interpreter_set_cache_file(self.inner, c_path.as_ptr(), key_size);
+                mnn_oxide_sys::mnn_interpreter_set_cache_file(
+                    self.inner,
+                    c_path.as_ptr(),
+                    key_size,
+                );
             }
         }
     }
@@ -234,12 +264,14 @@ impl Interpreter {
     /// # Returns
     /// Ok(()) on success, or an error on failure.
     pub fn update_cache(&self, session: &Session) -> MnnResult<()> {
-        let result = unsafe {
-            mnn_rs_sys::mnn_interpreter_update_cache(self.inner, session.inner())
-        };
+        let result =
+            unsafe { mnn_oxide_sys::mnn_interpreter_update_cache(self.inner, session.inner()) };
 
-        if result != mnn_rs_sys::MNN_ERROR_NONE as i32 {
-            return Err(MnnError::internal("Failed to update cache"));
+        if result != mnn_oxide_sys::MNN_ERROR_NONE as i32 {
+            return Err(native_error(
+                "Failed to update cache",
+                MnnError::internal("Failed to update cache"),
+            ));
         }
 
         Ok(())
@@ -254,7 +286,7 @@ impl Interpreter {
         let path_str = path.as_ref().to_string_lossy();
         if let Ok(c_path) = CString::new(path_str.as_ref()) {
             unsafe {
-                mnn_rs_sys::mnn_interpreter_set_external_file(self.inner, c_path.as_ptr(), flag);
+                mnn_oxide_sys::mnn_interpreter_set_external_file(self.inner, c_path.as_ptr(), flag);
             }
         }
     }
@@ -268,7 +300,7 @@ impl Interpreter {
     /// A vector of input tensor names.
     pub fn get_input_names(&self, session: &Session) -> Vec<String> {
         unsafe {
-            let array = mnn_rs_sys::mnn_interpreter_get_input_names(self.inner, session.inner());
+            let array = mnn_oxide_sys::mnn_interpreter_get_input_names(self.inner, session.inner());
             let mut names = Vec::with_capacity(array.count as usize);
 
             for i in 0..array.count {
@@ -279,7 +311,7 @@ impl Interpreter {
                 }
             }
 
-            mnn_rs_sys::mnn_string_array_free(&mut std::ptr::read(&array) as *mut _);
+            mnn_oxide_sys::mnn_string_array_free(&mut std::ptr::read(&array) as *mut _);
             names
         }
     }
@@ -293,7 +325,8 @@ impl Interpreter {
     /// A vector of output tensor names.
     pub fn get_output_names(&self, session: &Session) -> Vec<String> {
         unsafe {
-            let array = mnn_rs_sys::mnn_interpreter_get_output_names(self.inner, session.inner());
+            let array =
+                mnn_oxide_sys::mnn_interpreter_get_output_names(self.inner, session.inner());
             let mut names = Vec::with_capacity(array.count as usize);
 
             for i in 0..array.count {
@@ -304,7 +337,7 @@ impl Interpreter {
                 }
             }
 
-            mnn_rs_sys::mnn_string_array_free(&mut std::ptr::read(&array) as *mut _);
+            mnn_oxide_sys::mnn_string_array_free(&mut std::ptr::read(&array) as *mut _);
             names
         }
     }
@@ -320,7 +353,7 @@ impl Interpreter {
         }
 
         unsafe {
-            mnn_rs_sys::mnn_interpreter_resize_tensor(
+            mnn_oxide_sys::mnn_interpreter_resize_tensor(
                 self.inner,
                 tensor.inner_mut(),
                 shape.as_ptr(),
@@ -335,7 +368,7 @@ impl Interpreter {
     /// * `session` - The session to resize
     pub fn resize_session(&self, session: &mut Session) {
         unsafe {
-            mnn_rs_sys::mnn_interpreter_resize_session(self.inner, session.inner_mut());
+            mnn_oxide_sys::mnn_interpreter_resize_session(self.inner, session.inner_mut());
         }
     }
 
@@ -347,9 +380,7 @@ impl Interpreter {
     /// # Returns
     /// FLOPS count in millions.
     pub fn get_session_flops(&self, session: &Session) -> f32 {
-        unsafe {
-            mnn_rs_sys::mnn_interpreter_get_session_flops(self.inner, session.inner())
-        }
+        unsafe { mnn_oxide_sys::mnn_interpreter_get_session_flops(self.inner, session.inner()) }
     }
 
     /// Get session operator count.
@@ -360,19 +391,7 @@ impl Interpreter {
     /// # Returns
     /// Operator count (approximate, based on FLOPS).
     pub fn get_session_op_count(&self, session: &Session) -> i32 {
-        unsafe {
-            mnn_rs_sys::mnn_interpreter_get_session_op_count(self.inner, session.inner())
-        }
-    }
-}
-
-impl Drop for Interpreter {
-    fn drop(&mut self) {
-        if !self.inner.is_null() {
-            unsafe {
-                mnn_rs_sys::mnn_interpreter_destroy(self.inner);
-            }
-        }
+        unsafe { mnn_oxide_sys::mnn_interpreter_get_session_op_count(self.inner, session.inner()) }
     }
 }
 
@@ -390,30 +409,26 @@ mod async_impl {
     use super::*;
     use std::sync::Arc;
 
-    /// An asynchronous interpreter wrapper.
+    /// An interpreter wrapper for use in local async code.
     ///
-    /// This wraps an interpreter for use in async contexts.
-    #[derive(Clone)]
+    /// Its async methods execute MNN operations synchronously on the polling
+    /// thread. They do not offload work or permit native handles to move
+    /// between threads. Use an application-owned worker thread for
+    /// non-blocking inference.
+    #[derive(Clone, Debug)]
     pub struct AsyncInterpreter {
         inner: Arc<Interpreter>,
     }
 
     impl AsyncInterpreter {
         /// Create an async interpreter from a file.
-        pub async fn from_file<P: AsRef<Path> + Send + 'static>(path: P) -> MnnResult<Self> {
-            let path = path.as_ref().to_path_buf();
-            tokio::task::spawn_blocking(move || Interpreter::from_file(path))
-                .await
-                .map_err(|e| MnnError::AsyncError(e.to_string()))?
-                .map(Self::new)
+        pub async fn from_file<P: AsRef<Path>>(path: P) -> MnnResult<Self> {
+            Interpreter::from_file(path).map(Self::new)
         }
 
         /// Create an async interpreter from bytes.
         pub async fn from_bytes(data: Vec<u8>) -> MnnResult<Self> {
-            tokio::task::spawn_blocking(move || Interpreter::from_bytes(&data))
-                .await
-                .map_err(|e| MnnError::AsyncError(e.to_string()))?
-                .map(Self::new)
+            Interpreter::from_bytes(&data).map(Self::new)
         }
 
         /// Create a new async interpreter from an existing interpreter.
@@ -425,15 +440,12 @@ mod async_impl {
 
         /// Create a session.
         pub async fn create_session(&self, config: ScheduleConfig) -> MnnResult<Session> {
-            let interpreter = Arc::clone(&self.inner);
-            tokio::task::spawn_blocking(move || interpreter.create_session(config))
-                .await
-                .map_err(|e| MnnError::AsyncError(e.to_string()))?
+            self.inner.create_session(config)
         }
 
-        /// Get the inner interpreter.
+        /// Borrow the inner interpreter on the current thread.
         pub fn inner(&self) -> &Interpreter {
-            &self.inner
+            self.inner.as_ref()
         }
     }
 }

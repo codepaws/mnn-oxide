@@ -1,0 +1,641 @@
+//! Pure acquisition configuration checks shared with build-script tests.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcquisitionMode {
+    BringYourOwn,
+    Source,
+    Prebuilt,
+}
+
+/// Public MNN headers required by an optional wrapper subsystem.
+pub fn optional_module_headers(module: &str) -> Result<&'static [&'static str], String> {
+    match module {
+        "module" => Ok(&[
+            "MNN/expr/Module.hpp",
+            "MNN/expr/Expr.hpp",
+            "MNN/expr/Executor.hpp",
+        ]),
+        "runtime" => Ok(&["MNN/Interpreter.hpp"]),
+        "llm" => Ok(&["llm/llm.hpp"]),
+        _ => Err(format!("unknown optional MNN module `{module}`")),
+    }
+}
+
+/// Return whether static linking is selected, requiring exactly one link mode.
+pub fn validate_link_mode(static_link: bool, dynamic_link: bool) -> Result<bool, String> {
+    match (static_link, dynamic_link) {
+        (true, false) => Ok(true),
+        (false, true) => Ok(false),
+        (false, false) => {
+            Err("select exactly one MNN link mode: default `dynamic` or explicit `static`".into())
+        }
+        (true, true) => Err(
+            "static and dynamic MNN link modes conflict; use `--no-default-features` with `static`"
+                .into(),
+        ),
+    }
+}
+
+pub fn validate_acquisition(
+    prebuilt: bool,
+    source: bool,
+    system: bool,
+    has_lib_path: bool,
+    has_include_path: bool,
+) -> Result<AcquisitionMode, String> {
+    if has_lib_path != has_include_path {
+        return Err("MNN_LIB_DIR and MNN_INCLUDE_DIR must be supplied together".into());
+    }
+    if usize::from(prebuilt) + usize::from(source) > 1 {
+        return Err("use-prebuilt and build-from-source cannot be combined".into());
+    }
+    if prebuilt {
+        if system || has_lib_path {
+            return Err(
+                "use-prebuilt cannot be combined with system mode or MNN_LIB_DIR/MNN_INCLUDE_DIR"
+                    .into(),
+            );
+        }
+        return Ok(AcquisitionMode::Prebuilt);
+    }
+    if source {
+        if system || has_lib_path {
+            return Err("source mode cannot be combined with system mode or library paths".into());
+        }
+        return Ok(AcquisitionMode::Source);
+    }
+    if system && !has_lib_path {
+        return Err("system-mnn requires explicit MNN_LIB_DIR and MNN_INCLUDE_DIR paths".into());
+    }
+    if has_lib_path {
+        return Ok(AcquisitionMode::BringYourOwn);
+    }
+    Err("configure MNN_LIB_DIR and MNN_INCLUDE_DIR explicitly".into())
+}
+
+#[cfg(any(feature = "use-prebuilt", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrebuiltConfig {
+    pub url: String,
+    pub sha256: String,
+    pub target: String,
+    pub version: String,
+    pub cache_dir: std::path::PathBuf,
+}
+
+#[cfg(any(feature = "use-prebuilt", test))]
+pub fn validate_prebuilt_config(
+    url: Option<&str>,
+    sha256: Option<&str>,
+    target: Option<&str>,
+    version: Option<&str>,
+    cache_dir: Option<&str>,
+    cargo_target: &str,
+) -> Result<PrebuiltConfig, String> {
+    fn required<'a>(value: Option<&'a str>, name: &str) -> Result<&'a str, String> {
+        value
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| format!("use-prebuilt requires {name}"))
+    }
+    let url = required(url, "MNN_PREBUILT_URL")?;
+    if !url.starts_with("https://")
+        || url
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+    {
+        return Err("MNN_PREBUILT_URL must be an HTTPS URL without whitespace".into());
+    }
+    let sha256 = required(sha256, "MNN_PREBUILT_SHA256")?;
+    if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("MNN_PREBUILT_SHA256 must contain exactly 64 hexadecimal characters".into());
+    }
+    let target = required(target, "MNN_PREBUILT_TARGET")?;
+    if target != cargo_target {
+        return Err(format!(
+            "MNN_PREBUILT_TARGET ({target}) must match Cargo target ({cargo_target})"
+        ));
+    }
+    let version = required(version, "MNN_PREBUILT_VERSION")?;
+    for (name, value) in [
+        ("MNN_PREBUILT_TARGET", target),
+        ("MNN_PREBUILT_VERSION", version),
+    ] {
+        if !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err(format!(
+                "{name} may contain only ASCII letters, digits, '.', '_' and '-'"
+            ));
+        }
+    }
+    let cache_dir = std::path::PathBuf::from(required(cache_dir, "MNN_PREBUILT_CACHE_DIR")?);
+    Ok(PrebuiltConfig {
+        url: url.to_owned(),
+        sha256: sha256.to_ascii_lowercase(),
+        target: target.to_owned(),
+        version: version.to_owned(),
+        cache_dir,
+    })
+}
+
+pub fn is_full_commit_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub fn revision_matches(requested: &str, actual: &str) -> bool {
+    is_full_commit_sha(requested) && actual.eq_ignore_ascii_case(requested)
+}
+
+/// Return the MNN library filename emitted by CMake for a target OS and link mode.
+pub fn native_library_file_name(
+    target_os: &str,
+    target_env: &str,
+    use_static: bool,
+) -> &'static str {
+    match target_os {
+        "windows" if target_env == "gnu" && use_static => "libMNN.a",
+        "windows" if target_env == "gnu" => "libMNN.dll.a",
+        "windows" => "MNN.lib",
+        "macos" if !use_static => "libMNN.dylib",
+        _ if use_static => "libMNN.a",
+        _ => "libMNN.so",
+    }
+}
+
+/// Return MNN's case-sensitive CMake target name used by native linkers.
+pub fn native_link_name() -> &'static str {
+    "MNN"
+}
+
+/// MNN builds its Linux CUDA backend as a separate shared library.
+pub fn cuda_companion_library_name(target_os: &str) -> Option<&'static str> {
+    (target_os == "linux").then_some("MNN_Cuda_Main")
+}
+
+/// Check for the exact case-sensitive library filename selected by the
+/// linker configuration. Windows dynamic artifacts also need the DLL.
+#[cfg(any(feature = "use-prebuilt", test))]
+pub fn native_library_present(lib_dir: &std::path::Path, target: &str, static_link: bool) -> bool {
+    let windows = target.contains("windows");
+    let target_env = if windows && target.contains("gnu") {
+        "gnu"
+    } else if windows {
+        "msvc"
+    } else {
+        "gnu"
+    };
+    let target_os = if windows {
+        "windows"
+    } else if target.contains("apple") || target.contains("darwin") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let library = native_library_file_name(target_os, target_env, static_link);
+    lib_dir.join(library).is_file()
+        && (static_link || !windows || lib_dir.join("MNN.dll").is_file())
+}
+
+/// Whether a directory can satisfy MSVC's OpenCL import-library link.
+pub fn opencl_import_library_exists(directory: &std::path::Path) -> bool {
+    directory.join("OpenCL.lib").is_file()
+}
+
+/// Convert optional CUDA architecture overrides into validated CMake arguments.
+pub fn cuda_build_args(
+    architectures: Option<&str>,
+    native_arch: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if let Some(architectures) = architectures {
+        let architectures = architectures.trim();
+        if architectures.is_empty()
+            || !architectures
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".;,+ \t".contains(&byte))
+        {
+            return Err(
+                "MNN_CUDA_ARCHS must be a non-empty CUDA architecture list (for example `12.0` or `8.6;8.9`)".into(),
+            );
+        }
+        args.push(format!("-DCUDA_ARCHS={architectures}"));
+    }
+
+    if let Some(native_arch) = native_arch {
+        let enabled = match native_arch.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" => true,
+            "0" | "false" | "off" | "no" => false,
+            _ => return Err(
+                "MNN_CUDA_NATIVE_ARCH must be a boolean value: ON/OFF, true/false, yes/no, or 1/0"
+                    .into(),
+            ),
+        };
+        args.push(format!(
+            "-DMNN_CUDA_NATIVE_ARCH={}",
+            if enabled { "ON" } else { "OFF" }
+        ));
+    }
+
+    Ok(args)
+}
+
+/// Keep MNN's public symbols in one library for the wrapper's single-link contract.
+pub fn source_build_layout_args() -> [&'static str; 1] {
+    ["-DMNN_SEP_BUILD=OFF"]
+}
+
+pub fn checkout_status_is_clean(status: &str) -> bool {
+    status.is_empty()
+}
+
+/// MNN 3.x CUDA FetchContent creates its pinned CUTLASS checkout inside the
+/// source tree. Permit only that exact generated path and revision; all other
+/// tracked, untracked, or submodule changes remain rejected.
+pub fn checkout_status_is_clean_with_cutlass(
+    status: &str,
+    expected_cutlass_revision: Option<&str>,
+    actual_cutlass_revision: Option<&str>,
+) -> bool {
+    if checkout_status_is_clean(status) {
+        return true;
+    }
+
+    matches!(
+        (status, expected_cutlass_revision, actual_cutlass_revision),
+        (
+            "?? 3rd_party/cutlass/v2.9.0/\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25")
+        ) | (
+            "?? 3rd_party/cutlass/v4.0.0/\n",
+            Some("b995f933179c22d3fe0d871c3a53d11e4681950f"),
+            Some("b995f933179c22d3fe0d871c3a53d11e4681950f")
+        )
+    )
+}
+
+/// Parse `git ls-files --stage -z`, returning tracked paths and submodule flags.
+#[cfg(any(feature = "build-from-source", test))]
+pub fn parse_index_paths(output: &[u8]) -> Result<Vec<(std::path::PathBuf, bool)>, String> {
+    let mut paths = Vec::new();
+    for entry in output
+        .split(|&byte| byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let tab = entry
+            .iter()
+            .position(|&byte| byte == b'\t')
+            .ok_or_else(|| "invalid git ls-files --stage record".to_string())?;
+        let metadata = std::str::from_utf8(&entry[..tab])
+            .map_err(|_| "invalid git index metadata".to_string())?;
+        let mode = metadata
+            .split_whitespace()
+            .next()
+            .ok_or_else(|| "missing git index mode".to_string())?;
+        let path = std::str::from_utf8(&entry[tab + 1..])
+            .map_err(|_| "non-UTF8 MNN source path is unsupported".to_string())?;
+        paths.push((std::path::PathBuf::from(path), mode == "160000"));
+    }
+    Ok(paths)
+}
+
+/// Return a cache identity that changes when either the verified checkout or
+/// its location changes. The latter avoids sharing build outputs across
+/// checkouts whose untracked/submodule inputs may differ despite equal HEADs.
+pub fn source_cache_identity(source_path: &std::path::Path, revision: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source_path.hash(&mut hasher);
+    revision.to_ascii_lowercase().hash(&mut hasher);
+    format!(
+        "{}-{:#016x}",
+        revision.to_ascii_lowercase(),
+        hasher.finish()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_conflicting_modes_and_partial_paths() {
+        assert!(validate_acquisition(true, true, false, false, false).is_err());
+        assert!(validate_acquisition(false, true, true, false, false).is_err());
+        assert!(validate_acquisition(false, false, false, true, false).is_err());
+    }
+
+    #[test]
+    fn accepts_only_explicit_byolibrary_or_pinned_source_selection() {
+        assert_eq!(
+            validate_acquisition(false, false, false, true, true),
+            Ok(AcquisitionMode::BringYourOwn)
+        );
+        assert_eq!(
+            validate_acquisition(false, true, false, false, false),
+            Ok(AcquisitionMode::Source)
+        );
+        assert!(validate_acquisition(false, false, true, false, false).is_err());
+        assert_eq!(
+            validate_acquisition(true, false, false, false, false),
+            Ok(AcquisitionMode::Prebuilt)
+        );
+        assert!(validate_acquisition(true, false, true, false, false).is_err());
+        assert!(validate_acquisition(true, false, false, true, true).is_err());
+    }
+
+    #[test]
+    fn cuda_build_overrides_emit_target_architecture_and_native_arch_mode() {
+        assert_eq!(
+            cuda_build_args(Some("12.0"), Some("true")),
+            Ok(vec![
+                "-DCUDA_ARCHS=12.0".to_string(),
+                "-DMNN_CUDA_NATIVE_ARCH=ON".to_string(),
+            ])
+        );
+        assert_eq!(
+            cuda_build_args(Some("8.6;8.9"), Some("OFF")),
+            Ok(vec![
+                "-DCUDA_ARCHS=8.6;8.9".to_string(),
+                "-DMNN_CUDA_NATIVE_ARCH=OFF".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn cuda_build_overrides_reject_empty_or_untrusted_values() {
+        assert!(cuda_build_args(Some("  "), None).is_err());
+        assert!(cuda_build_args(Some("12.0 -DUNSAFE=ON"), None).is_err());
+        assert!(cuda_build_args(None, Some("sometimes")).is_err());
+    }
+
+    #[test]
+    fn link_mode_requires_exactly_one_static_or_dynamic_choice() {
+        assert_eq!(validate_link_mode(true, false), Ok(true));
+        assert_eq!(validate_link_mode(false, true), Ok(false));
+        assert!(validate_link_mode(false, false).is_err());
+        assert!(validate_link_mode(true, true).is_err());
+    }
+
+    #[test]
+    fn prebuilt_config_requires_https_sha_target_version_and_cache() {
+        let target = "x86_64-unknown-linux-gnu";
+        let digest = "a".repeat(64);
+        let valid = || {
+            validate_prebuilt_config(
+                Some("https://example.invalid/mnn.tar.gz"),
+                Some(&digest),
+                Some(target),
+                Some("3.6.1"),
+                Some("cache"),
+                target,
+            )
+        };
+        assert!(valid().is_ok());
+        assert_eq!(valid().unwrap().sha256, digest);
+        assert!(validate_prebuilt_config(
+            None,
+            Some(&digest),
+            Some(target),
+            Some("3.6.1"),
+            Some("cache"),
+            target
+        )
+        .unwrap_err()
+        .contains("MNN_PREBUILT_URL"));
+        assert!(validate_prebuilt_config(
+            Some("http://example.invalid/mnn.tar.gz"),
+            Some(&digest),
+            Some(target),
+            Some("3.6.1"),
+            Some("cache"),
+            target
+        )
+        .is_err());
+        assert!(validate_prebuilt_config(
+            Some("https://example.invalid/mnn.tar.gz"),
+            Some("abc"),
+            Some(target),
+            Some("3.6.1"),
+            Some("cache"),
+            target
+        )
+        .is_err());
+        assert!(validate_prebuilt_config(
+            Some("https://example.invalid/mnn.tar.gz"),
+            Some(&digest),
+            Some("aarch64-unknown-linux-gnu"),
+            Some("3.6.1"),
+            Some("cache"),
+            target
+        )
+        .is_err());
+        assert!(validate_prebuilt_config(
+            Some("https://example.invalid/mnn.tar.gz"),
+            Some(&digest),
+            Some(target),
+            Some("../3.6.1"),
+            Some("cache"),
+            target
+        )
+        .is_err());
+        assert!(validate_prebuilt_config(
+            Some("https://example.invalid/mnn.tar.gz"),
+            Some(&digest),
+            Some(target),
+            Some("3.6.1"),
+            None,
+            target
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn requires_full_commit_sha_format() {
+        assert!(is_full_commit_sha(
+            "0123456789abcdef0123456789abcdef01234567"
+        ));
+        assert!(!is_full_commit_sha("3.6.1"));
+        assert!(!is_full_commit_sha(
+            "0123456789abcdef0123456789abcdef0123456z"
+        ));
+        let pin = "0123456789abcdef0123456789abcdef01234567";
+        assert!(revision_matches(pin, pin));
+        assert!(!revision_matches(
+            pin,
+            "1123456789abcdef0123456789abcdef01234567"
+        ));
+    }
+
+    #[test]
+    fn native_mnn_library_names_match_cmake_outputs_and_link_mode() {
+        assert_eq!(native_library_file_name("linux", "gnu", false), "libMNN.so");
+        assert_eq!(native_library_file_name("linux", "gnu", true), "libMNN.a");
+        assert_eq!(native_library_file_name("macos", "", false), "libMNN.dylib");
+        assert_eq!(native_library_file_name("macos", "", true), "libMNN.a");
+        assert_eq!(
+            native_library_file_name("windows", "msvc", false),
+            "MNN.lib"
+        );
+        assert_eq!(native_library_file_name("windows", "msvc", true), "MNN.lib");
+        assert_eq!(native_library_file_name("windows", "gnu", true), "libMNN.a");
+        assert_eq!(
+            native_library_file_name("windows", "gnu", false),
+            "libMNN.dll.a"
+        );
+        assert_eq!(native_link_name(), "MNN");
+    }
+
+    #[test]
+    fn cuda_companion_is_a_linux_shared_library_only() {
+        assert_eq!(cuda_companion_library_name("linux"), Some("MNN_Cuda_Main"));
+        assert_eq!(cuda_companion_library_name("windows"), None);
+        assert_eq!(cuda_companion_library_name("macos"), None);
+    }
+
+    #[test]
+    fn prebuilt_library_presence_requires_the_case_sensitive_link_name() {
+        // Windows filesystems normally treat these names as identical. The
+        // filename contract itself is tested cross-platform above; exercise
+        // case-sensitive path rejection only where the filesystem supports it.
+        if cfg!(windows) {
+            assert_eq!(native_library_file_name("linux", "gnu", true), "libMNN.a");
+            assert_eq!(native_library_file_name("linux", "gnu", false), "libMNN.so");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "mnn-oxide-link-name-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("libmnn.a"), b"fixture").unwrap();
+        std::fs::write(root.join("libmnn.so"), b"fixture").unwrap();
+        assert!(!native_library_present(
+            &root,
+            "x86_64-unknown-linux-gnu",
+            true
+        ));
+        assert!(!native_library_present(
+            &root,
+            "x86_64-unknown-linux-gnu",
+            false
+        ));
+        std::fs::write(root.join("libMNN.a"), b"fixture").unwrap();
+        std::fs::write(root.join("libMNN.so"), b"fixture").unwrap();
+        assert!(native_library_present(
+            &root,
+            "x86_64-unknown-linux-gnu",
+            true
+        ));
+        assert!(native_library_present(
+            &root,
+            "x86_64-unknown-linux-gnu",
+            false
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_build_uses_one_shared_library_for_wrapper_symbols() {
+        assert!(source_build_layout_args().contains(&"-DMNN_SEP_BUILD=OFF"));
+    }
+
+    #[test]
+    fn opencl_import_library_directory_must_contain_the_msvc_import_library() {
+        let root = std::env::temp_dir().join(format!(
+            "mnn-oxide-opencl-lib-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(!opencl_import_library_exists(&root));
+        std::fs::write(root.join("OpenCL.lib"), b"fixture").unwrap();
+        assert!(opencl_import_library_exists(&root));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_cache_identity_tracks_checkout_path_and_revision() {
+        let path = std::path::Path::new("mnn-source-a");
+        let revision_a = "0123456789abcdef0123456789abcdef01234567";
+        let revision_b = "1123456789abcdef0123456789abcdef01234567";
+        assert_ne!(
+            source_cache_identity(path, revision_a),
+            source_cache_identity(path, revision_b)
+        );
+        assert_ne!(
+            source_cache_identity(path, revision_a),
+            source_cache_identity(std::path::Path::new("mnn-source-b"), revision_a)
+        );
+    }
+
+    #[test]
+    fn source_checkout_must_have_no_tracked_or_untracked_changes() {
+        assert!(checkout_status_is_clean(""));
+        assert!(!checkout_status_is_clean(" M src/file.cpp\n"));
+        assert!(!checkout_status_is_clean("?? local-input.cmake\n"));
+    }
+
+    #[test]
+    fn only_pinned_mnn_cuda_cutlass_fetch_is_allowed() {
+        assert!(checkout_status_is_clean_with_cutlass(
+            "?? 3rd_party/cutlass/v2.9.0/\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+        ));
+        assert!(checkout_status_is_clean_with_cutlass(
+            "?? 3rd_party/cutlass/v4.0.0/\n",
+            Some("b995f933179c22d3fe0d871c3a53d11e4681950f"),
+            Some("b995f933179c22d3fe0d871c3a53d11e4681950f"),
+        ));
+        assert!(checkout_status_is_clean_with_cutlass("", None, None));
+        assert!(!checkout_status_is_clean_with_cutlass(
+            "?? 3rd_party/cutlass/v2.9.0/\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("0000000000000000000000000000000000000000"),
+        ));
+        assert!(!checkout_status_is_clean_with_cutlass(
+            "?? 3rd_party/cutlass/v2.9.0/\n?? extra/\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+        ));
+        assert!(!checkout_status_is_clean_with_cutlass(
+            " M source/backend/cuda/CMakeLists.txt\n",
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+            Some("319a389f42b776fae5701afcb943fc03be5b5c25"),
+        ));
+    }
+
+    #[test]
+    fn tracked_snapshot_entries_include_submodules_but_not_untracked_files() {
+        let entries = b"100644 abc123 0\tCMakeLists.txt\0160000 def456 0\tthird_party/module\0";
+        assert_eq!(
+            parse_index_paths(entries).unwrap(),
+            vec![
+                (std::path::PathBuf::from("CMakeLists.txt"), false),
+                (std::path::PathBuf::from("third_party/module"), true),
+            ]
+        );
+        assert!(parse_index_paths(b"not-an-index-record").is_err());
+    }
+
+    #[test]
+    fn optional_module_features_require_their_public_header_families() {
+        assert_eq!(
+            optional_module_headers("module").unwrap(),
+            &[
+                "MNN/expr/Module.hpp",
+                "MNN/expr/Expr.hpp",
+                "MNN/expr/Executor.hpp"
+            ]
+        );
+        assert_eq!(
+            optional_module_headers("runtime").unwrap(),
+            &["MNN/Interpreter.hpp"]
+        );
+    }
+}

@@ -1,5 +1,5 @@
 [package]
-name = "mnn-rs-sys"
+name = "mnn-oxide-sys"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,7 +14,7 @@ authors.workspace = true
 links = "mnn"
 
 [features]
-default = ["cpu", "static", "use-prebuilt"]
+default = ["cpu", "dynamic"]
 
 # Linking method
 static = []
@@ -41,9 +41,9 @@ avx2 = []
 avx512 = []
 
 # Build options
-# Use prebuilt binaries (default) - downloads from GitHub Releases
-use-prebuilt = ["ureq", "tar", "flate2"]
-# Build MNN from source (requires cmake and num_cpus)
+# Opt-in user-supplied archive; no URL or artifact is selected by this package.
+use-prebuilt = ["ureq", "sha2", "flate2", "tar", "serde_json"]
+# Build from an existing MNN checkout pinned with MNN_SOURCE_VERSION.
 build-from-source = ["cmake", "num_cpus"]
 # Use system-installed MNN
 system-mnn = []
@@ -58,7 +58,7 @@ module = []
 # Multi-session runtime sharing (requires MNN with RuntimeManager)
 runtime = []
 # LLM large language model inference (requires MNN built with MNN_BUILD_LLM=ON,
-# which the prebuilt binaries and build-from-source both provide)
+# which the selected native MNN artifact must provide)
 llm = []
 
 # Platform specific
@@ -71,12 +71,20 @@ cmake = { workspace = true, optional = true }
 pkg-config = { workspace = true }
 cc = "1.0"
 num_cpus = { version = "1.16", optional = true }
-# Dependencies for downloading prebuilt binaries
-ureq = { version = "2.9", optional = true }
-tar = { version = "0.4", optional = true }
-flate2 = { version = "1.0", optional = true }
+ureq = { version = "2.12", default-features = false, features = ["tls"], optional = true }
+sha2 = { version = "0.10", optional = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+tar = { version = "0.4", default-features = false, optional = true }
+serde_json = { version = "1", optional = true }
 
 [dependencies]
+
+[dev-dependencies]
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+sha2 = "0.10"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { version = "0.4", default-features = false }
+serde_json = "1"
 
 [package.metadata.docs.rs]
 # docs.rs doesn't have network access or cmake, so we skip native library linking
@@ -88,4 +96,3 @@ no-default-features = true
 # Instructions for building from source
 [package.metadata.mnn]
 repository = "https://github.com/alibaba/MNN.git"
-default_branch = "master"

@@ -3,15 +3,21 @@
 //! These tests require a valid MNN model file to run.
 //! Tests are skipped if no model is available.
 
-use mnn_rs::prelude::*;
+use mnn_oxide::prelude::*;
 
 /// Check if a test model is available
-fn test_model_available() -> Option<&'static str> {
+fn test_model_available() -> Option<String> {
+    if let Ok(model_path) = std::env::var("MNN_TEST_MODEL") {
+        if std::path::Path::new(&model_path).is_file() {
+            return Some(model_path);
+        }
+    }
+
     // Check for test model in common locations
     if std::path::Path::new("tests/models/mobilenetV3.mnn").exists() {
-        Some("tests/models/mobilenetV3.mnn")
+        Some("tests/models/mobilenetV3.mnn".to_owned())
     } else if std::path::Path::new("test.mnn").exists() {
-        Some("test.mnn")
+        Some("test.mnn".to_owned())
     } else {
         None
     }
@@ -19,17 +25,17 @@ fn test_model_available() -> Option<&'static str> {
 
 #[test]
 fn test_version() {
-    let v = mnn_rs::version();
+    let v = mnn_oxide::version();
     // Version should be a string (may be "unknown" if MNN not linked)
     assert!(!v.is_empty());
 }
 
 #[test]
 fn test_available_backends() {
-    let backends = mnn_rs::available_backends();
-    // CPU should always be available (even if not linked properly)
-    // At minimum, this tests that the function doesn't crash
-    println!("Available backends: {:?}", backends);
+    assert_eq!(
+        mnn_oxide::BackendType::CPU.availability(),
+        mnn_oxide::BackendAvailability::Available
+    );
 }
 
 #[test]
@@ -126,10 +132,10 @@ fn test_error_types() {
 fn test_utility_functions() {
     let shape = [1, 3, 224, 224];
 
-    let size = mnn_rs::calculate_tensor_size(&shape, 4);
+    let size = mnn_oxide::calculate_tensor_size(&shape, 4);
     assert_eq!(size, 1 * 3 * 224 * 224 * 4);
 
-    let count = mnn_rs::calculate_element_count(&shape);
+    let count = mnn_oxide::calculate_element_count(&shape);
     assert_eq!(count, 1 * 3 * 224 * 224);
 }
 
@@ -139,7 +145,7 @@ fn test_utility_functions() {
 #[ignore = "Requires test model file"]
 fn test_interpreter_from_file() {
     if let Some(model_path) = test_model_available() {
-        let result = Interpreter::from_file(model_path);
+        let result = Interpreter::from_file(&model_path);
         assert!(result.is_ok());
     }
 }
@@ -148,7 +154,7 @@ fn test_interpreter_from_file() {
 #[ignore = "Requires test model file"]
 fn test_session_creation() {
     if let Some(model_path) = test_model_available() {
-        let interpreter = Interpreter::from_file(model_path).unwrap();
+        let interpreter = Interpreter::from_file(&model_path).unwrap();
         let config = ScheduleConfig::default();
         let result = interpreter.create_session(config);
         assert!(result.is_ok());
@@ -159,9 +165,16 @@ fn test_session_creation() {
 #[ignore = "Requires test model file"]
 fn test_session_run() {
     if let Some(model_path) = test_model_available() {
-        let interpreter = Interpreter::from_file(model_path).unwrap();
+        let interpreter = Interpreter::from_file(&model_path).unwrap();
         let config = ScheduleConfig::default();
         let mut session = interpreter.create_session(config).unwrap();
+
+        // Some models require an explicit resize before the first run even
+        // when their input shape is already concrete.
+        let mut input = session.get_input(None).unwrap();
+        let input_shape = input.shape();
+        interpreter.resize_tensor(&mut input, &input_shape);
+        interpreter.resize_session(&mut session);
 
         let result = session.run();
         assert!(result.is_ok());
@@ -178,7 +191,7 @@ mod async_tests {
     #[tokio::test]
     async fn test_async_interpreter_creation() {
         if let Some(model_path) = test_model_available() {
-            let result = mnn_rs::AsyncInterpreter::from_file(model_path).await;
+            let result = mnn_oxide::AsyncInterpreter::from_file(&model_path).await;
             assert!(result.is_ok());
         }
     }

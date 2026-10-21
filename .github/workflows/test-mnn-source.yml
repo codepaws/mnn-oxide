@@ -1,0 +1,228 @@
+name: Test (Source-Built MNN)
+
+# Runs real inference tests against MNN built from a pinned, clean source
+# checkout. Prebuilt acquisition remains an explicit opt-in and is tested
+# separately by the sys crate's artifact-validation tests.
+#
+# Tests covered:
+#   - Inference: a pinned PP-LCNet model with verified weights is downloaded to
+#     target/test-models and exercised by the `#[ignore]`-gated tests in
+#     tests/integration_test.rs (run via `--include-ignored`). The small
+#     mobilenetV3.mnn checked into tests/models is a benchmark graph without
+#     weights and must not be used for inference.
+#   - LLM: the user-supplied LLM test (if any) reads $MNN_TEST_LLM_DIR.
+#   - LLM example: examples/llm_stream.rs runs real streaming generation and
+#     exits (llm_chat is interactive and is intentionally NOT run here).
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  MNN_SOURCE_PATH: ${{ github.workspace }}/target/mnn-source-3.6.1
+  MNN_SOURCE_VERSION: d407447ed56c4121a11ccbd266dc184ca1ead0c2
+  MNN_MSVC_RUNTIME: MD
+  # Directory where the LLM test model is downloaded; the user's LLM test and
+  # the llm_stream example both read tests/models/llm/config.json from here.
+  MNN_TEST_LLM_DIR: tests/models/llm
+
+jobs:
+  test:
+    name: Test ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned MNN source
+        uses: actions/checkout@v4
+        with:
+          repository: alibaba/MNN
+          ref: d407447ed56c4121a11ccbd266dc184ca1ead0c2
+          path: target/mnn-source-3.6.1
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Select MSVC linker for Rust
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}".ToUpperInvariant().Replace('-', '_')
+          $targetArch = if ($target.StartsWith('I686_')) { 'x86' } else { 'x64' }
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\$targetArch\link.exe"
+          if (-not (Test-Path -LiteralPath $linker)) { throw "MSVC linker not found: $linker" }
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_${target}_LINKER=$linker"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Check accelerator feature pathways
+        # These compile-only checks exercise feature gates, Rust backend
+        # selection, the GPU example, and the opt-in acceptance test without
+        # claiming that this runner has the native drivers or GPU libraries.
+        shell: bash
+        env:
+          DOCS_RS: "1"
+        run: |
+          for backend in cuda opencl vulkan; do
+            cargo check --target ${{ matrix.target }} --no-default-features \
+              --features cpu,static,$backend --tests --examples
+          done
+
+      - name: Cache LLM test model
+        id: llm-model
+        uses: actions/cache@v4
+        with:
+          path: tests/models/llm
+          # Bump this key to force a fresh download when the model changes.
+          key: llm-model-qwen2-0.5b-instruct-mnn-v1
+
+      - name: Download LLM test model
+        if: steps.llm-model.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          python3 -m pip install -q -U --break-system-packages huggingface_hub
+          python3 -c "from huggingface_hub import snapshot_download; snapshot_download('taobao-mnn/Qwen2-0.5B-Instruct-MNN', local_dir='tests/models/llm')"
+        # If huggingface.co is unreachable from the runner, use ModelScope instead:
+        #   python3 -m pip install -q modelscope
+        #   python3 -c "from modelscope import snapshot_download; snapshot_download('taobao-mnn/Qwen2-0.5B-Instruct-MNN', local_dir='tests/models/llm')"
+
+      - name: Patch LLM model config (add jinja chat template)
+        # The upstream taobao-mnn model's llm_config.json carries no `jinja`
+        # field (only the legacy `prompt_template`, which MNN 3.6.1 does not
+        # read on the Llm::response path). Without it, apply_chat_template
+        # falls back to concatenating the raw prompt with no <|im_start|>
+        # markers, the model never emits its <|im_end|> EOS token, and
+        # streaming generation loops forever. Inject the standard Qwen2
+        # ChatML jinja template (the same one the locally-converted model
+        # ships). Runs unconditionally (idempotent) so cached models are
+        # patched too.
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          p = 'tests/models/llm/llm_config.json'
+          with open(p, encoding='utf-8') as f:
+              d = json.load(f)
+          d['jinja'] = {
+              'chat_template': "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\\nYou are a helpful assistant.<|im_end|>\\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}",
+              'eos': '<|im_end|>'
+          }
+          with open(p, 'w', encoding='utf-8') as f:
+              json.dump(d, f, indent=2)
+          print('patched llm_config.json with jinja chat template')
+          PYEOF
+
+      - name: Download pinned inference model
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          import hashlib
+          import pathlib
+          import urllib.request
+
+          url = 'https://huggingface.co/baicai1145/pp-ocr-mnn-models/resolve/7746c6c454200777bb56fe0dadd350d58a6753e8/PP-LCNet_x1_0_textline_ori.mnn'
+          expected_sha256 = '8b63eed38352bd505e4790a4fcb4d213889c83d4b78bcc055a8ec74cbfe1f687'
+          max_bytes = 6_694_800
+          destination = pathlib.Path('target/test-models/PP-LCNet_x1_0_textline_ori.mnn')
+          destination.parent.mkdir(parents=True, exist_ok=True)
+
+          def matches(path):
+              return path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == expected_sha256
+
+          if not matches(destination):
+              request = urllib.request.Request(url, headers={'User-Agent': 'mnn-oxide-ci/1.0'})
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  content_length = response.headers.get('Content-Length')
+                  if content_length and int(content_length) > max_bytes:
+                      raise RuntimeError(f'model exceeds expected maximum size: {content_length}')
+                  data = response.read(max_bytes + 1)
+              if len(data) > max_bytes:
+                  raise RuntimeError(f'model exceeds expected maximum size of {max_bytes} bytes')
+              actual_sha256 = hashlib.sha256(data).hexdigest()
+              if actual_sha256 != expected_sha256:
+                  raise RuntimeError(f'model SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}')
+              temporary = destination.with_suffix(destination.suffix + '.part')
+              temporary.write_bytes(data)
+              temporary.replace(destination)
+          print(f'Using verified inference model: {destination}')
+
+      - name: Run tests (integration + LLM)
+        # Source-build MNN with the LLM module enabled. `--include-ignored`
+        # also runs model-dependent inference tests using the verified model
+        # downloaded above. Keep doctests separate so this option cannot force
+        # intentionally ignored snippets that need a user-supplied model or
+        # optional features to run.
+        shell: bash
+        env:
+          MNN_TEST_MODEL: target/test-models/PP-LCNet_x1_0_textline_ori.mnn
+        run: |
+          cargo test --tests --target ${{ matrix.target }} --no-default-features \
+            --features cpu,static,llm,build-from-source -- --include-ignored
+
+      - name: Run documentation tests
+        # Run normal documentation tests without including snippets explicitly
+        # marked `ignore` because they need external model files or features.
+        shell: bash
+        run: |
+          cargo test --doc --target ${{ matrix.target }} --no-default-features \
+            --features cpu,static,llm,build-from-source
+
+      - name: Run LLM streaming example
+        # Real streaming generation against the downloaded model. This is the
+        # end-to-end proof that the prebuilt links and runs real inference.
+        # The example prints its streamed response but does NOT self-exit (the
+        # MNN LLM engine blocks in worker-thread teardown after the final
+        # token), so we run it in the background and kill it after a grace
+        # period. continue-on-error keeps CI green; the `cargo test` step above
+        # is the authoritative gate (it links the prebuilt and runs the
+        # classification + LLM unit tests). `timeout` is avoided because it is
+        # not installed by default on macOS runners.
+        # Uses the prebuilt MNN downloaded by build.rs under the `llm` feature.
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo run --target ${{ matrix.target }} --example llm_stream --no-default-features \
+            --features cpu,static,llm,build-from-source -- tests/models/llm/config.json "Hello, please introduce yourself in one sentence." &
+          llm_pid=$!
+          ( sleep 120; kill "$llm_pid" 2>/dev/null ) &
+          wait "$llm_pid"

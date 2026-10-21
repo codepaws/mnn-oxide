@@ -11,7 +11,7 @@
 //! cargo run --example llm_stream --features llm,build-from-source --no-default-features -- /path/to/model/config.json [prompt]
 //! ```
 
-use mnn_rs::{Llm, MnnResult};
+use mnn_oxide::{Llm, MnnResult};
 
 fn main() -> MnnResult<()> {
     let config_path = std::env::args()

@@ -73,3 +73,5 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .mypy_cache/
+# Local design and implementation planning documents
+/docs/superpowers/

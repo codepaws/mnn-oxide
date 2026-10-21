@@ -84,7 +84,17 @@ typedef int MNNErrorCodeWrapper;
 /** Get MNN version string */
 const char* mnn_get_version(void);
 
-/** Check if a backend is available (0: not available, 1: available) */
+/**
+ * Get the last C++ exception captured by a wrapper call on the current thread.
+ * Returns NULL if the previous guarded call succeeded. The pointer remains
+ * valid until the next guarded wrapper call on this thread.
+ */
+const char* mnn_last_error(void);
+
+/**
+ * Legacy availability stub: returns 1 for CPU and 0 for other backends because
+ * native accelerator probing is not implemented. Zero does not confirm absence.
+ */
 int mnn_is_backend_available(int type);
 
 /* ============================================================================
@@ -102,6 +112,16 @@ void mnn_interpreter_destroy(MNNInterpreter* interpreter);
 
 /** Create session with config */
 MNNSession* mnn_interpreter_create_session(MNNInterpreter* interpreter, int type, int num_thread);
+
+/** Create a session with explicitly mapped backend tuning modes (shim ABI v2). */
+MNNSession* mnn_interpreter_create_session_v2(
+    MNNInterpreter* interpreter,
+    int type,
+    int num_thread,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+);
 
 /** Destroy session */
 void mnn_interpreter_release_session(MNNInterpreter* interpreter, MNNSession* session);
@@ -123,6 +143,9 @@ float mnn_interpreter_get_session_memory(MNNInterpreter* interpreter, MNNSession
 
 /** Get session FLOPS in M */
 float mnn_interpreter_get_session_flops(MNNInterpreter* interpreter, MNNSession* session);
+
+/** Get the first backend MNN assigned to a session, or -1 if unavailable. */
+int mnn_interpreter_get_session_backend(MNNInterpreter* interpreter, MNNSession* session);
 
 /** Get business code */
 const char* mnn_interpreter_get_biz_code(MNNInterpreter* interpreter);
@@ -285,6 +308,9 @@ int mnn_tensor_copy_from_host(MNNTensor* dest, const MNNTensor* host_tensor);
 /** Copy data from device tensor to host tensor */
 int mnn_tensor_copy_to_host(MNNTensor* host_tensor, const MNNTensor* dest);
 
+/** Create a host tensor with the same shape/type as a device tensor. */
+MNNTensor* mnn_tensor_create_host_from_device(const MNNTensor* device_tensor, int copy_data);
+
 /** Create a device tensor with given shape */
 MNNTensor* mnn_tensor_create_device(
     const int* shape,
@@ -359,13 +385,22 @@ int mnn_interpreter_get_session_op_count(MNNInterpreter* interpreter, MNNSession
  * Runtime Management (Multi-Session Sharing)
  * ============================================================================ */
 
-/** Opaque handle to MNN RuntimeManager */
+/** Opaque handle owning MNN Interpreter::RuntimeInfo for shared sessions. */
 typedef struct MNNRuntimeManagerHandle MNNRuntimeManager;
 
-/** Create runtime manager from config */
+/** Create shared runtime info from a backend configuration. */
 MNNRuntimeManager* mnn_runtime_manager_create(int type, int num_threads);
 
-/** Destroy runtime manager */
+/** Create a shared runtime with explicitly mapped backend tuning modes (shim ABI v2). */
+MNNRuntimeManager* mnn_runtime_manager_create_v2(
+    int type,
+    int num_threads,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+);
+
+/** Destroy shared runtime info. */
 void mnn_runtime_manager_destroy(MNNRuntimeManager* manager);
 
 /** Create session with shared runtime
@@ -380,6 +415,17 @@ MNNSession* mnn_interpreter_create_session_with_runtime(
     MNNRuntimeManager* runtime,
     int type,
     int num_threads
+);
+
+/** Create a session with a shared runtime and explicit backend modes (shim ABI v2). */
+MNNSession* mnn_interpreter_create_session_with_runtime_v2(
+    MNNInterpreter* interpreter,
+    MNNRuntimeManager* runtime,
+    int type,
+    int num_threads,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
 );
 
 #ifdef __cplusplus

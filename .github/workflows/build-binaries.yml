@@ -7,20 +7,43 @@ on:
   workflow_dispatch:
     inputs:
       mnn_version:
-        description: 'MNN version/tag to build (leave empty for latest)'
+        description: 'MNN source tag to build (currently pinned by default to 3.6.1)'
         required: false
-        default: ''
-      upload_artifacts:
-        description: 'Upload artifacts (for testing without release)'
-        required: false
-        default: 'true'
-        type: boolean
+        default: '3.6.1'
 
 env:
   CMAKE_BUILD_TYPE: Release
 
 jobs:
+  resolve-mnn:
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_commit: ${{ steps.resolve.outputs.source_commit }}
+    steps:
+      - name: Resolve immutable MNN source revision
+        id: resolve
+        env:
+          MNN_SOURCE_REF: ${{ inputs.mnn_version || '3.6.1' }}
+        run: |
+          set -euo pipefail
+          git check-ref-format "refs/tags/$MNN_SOURCE_REF"
+          git ls-remote https://github.com/alibaba/MNN.git \
+            "refs/tags/$MNN_SOURCE_REF" "refs/tags/$MNN_SOURCE_REF^{}" > refs.txt
+          source_commit=$(awk '$2 ~ /\^\{\}$/ { peeled=$1 } END { if (peeled != "") print peeled }' refs.txt)
+          if [ -z "$source_commit" ]; then
+            source_commit=$(awk -v ref="refs/tags/$MNN_SOURCE_REF" '$2 == ref { print $1 }' refs.txt)
+          fi
+          if [[ ! "$source_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Could not resolve MNN tag $MNN_SOURCE_REF to a commit" >&2
+            exit 1
+          fi
+          echo "source_ref=$MNN_SOURCE_REF" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "Resolved MNN $MNN_SOURCE_REF to $source_commit"
+
   build-windows:
+    needs: resolve-mnn
     runs-on: windows-2022
     strategy:
       matrix:
@@ -42,7 +65,8 @@ jobs:
       - name: Get MNN Source
         shell: bash
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN
         shell: bash
@@ -88,6 +112,7 @@ jobs:
           retention-days: 7
 
   build-linux:
+    needs: resolve-mnn
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -111,7 +136,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN
         run: |
@@ -157,6 +183,7 @@ jobs:
 
   # CUDA builds for Windows and Linux x86_64
   build-windows-cuda:
+    needs: resolve-mnn
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -176,7 +203,8 @@ jobs:
       - name: Get MNN Source
         shell: bash
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN with CUDA
         shell: bash
@@ -221,6 +249,7 @@ jobs:
           retention-days: 7
 
   build-linux-cuda:
+    needs: resolve-mnn
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -239,7 +268,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN with CUDA
         run: |
@@ -281,6 +311,7 @@ jobs:
           retention-days: 7
 
   build-macos:
+    needs: resolve-mnn
     runs-on: macos-latest
     strategy:
       matrix:
@@ -299,7 +330,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN
         run: |
@@ -349,6 +381,7 @@ jobs:
           retention-days: 7
 
   build-android:
+    needs: resolve-mnn
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -375,7 +408,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Patch MNN LLM CMake (OBJECT library POST_BUILD workaround)
         run: |
@@ -435,6 +469,7 @@ jobs:
           retention-days: 7
 
   build-ios:
+    needs: resolve-mnn
     runs-on: macos-latest
     strategy:
       matrix:
@@ -453,7 +488,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN
         run: |
@@ -518,6 +554,7 @@ jobs:
 
   # GPU Backend builds
   build-windows-opencl:
+    needs: resolve-mnn
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -538,7 +575,8 @@ jobs:
       - name: Get MNN Source
         shell: bash
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN with OpenCL
         shell: bash
@@ -581,6 +619,7 @@ jobs:
           retention-days: 7
 
   build-linux-opencl:
+    needs: resolve-mnn
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -594,7 +633,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN with OpenCL
         run: |
@@ -634,6 +674,7 @@ jobs:
           retention-days: 7
 
   build-linux-vulkan:
+    needs: resolve-mnn
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -647,7 +688,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Build MNN with Vulkan
         run: |
@@ -687,6 +729,7 @@ jobs:
           retention-days: 7
 
   build-android-opencl:
+    needs: resolve-mnn
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -706,7 +749,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Patch MNN LLM CMake (OBJECT library POST_BUILD workaround)
         run: |
@@ -758,6 +802,7 @@ jobs:
           retention-days: 7
 
   build-android-vulkan:
+    needs: resolve-mnn
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -777,7 +822,8 @@ jobs:
 
       - name: Get MNN Source
         run: |
-          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git mnn-source
+          git clone --depth 1 --branch "${{ needs.resolve-mnn.outputs.source_ref }}" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "${{ needs.resolve-mnn.outputs.source_commit }}"
 
       - name: Patch MNN LLM CMake (OBJECT library POST_BUILD workaround)
         run: |
@@ -830,6 +876,7 @@ jobs:
 
   release:
     needs:
+      - resolve-mnn
       - build-windows
       - build-linux
       - build-macos
@@ -850,54 +897,75 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Inject MNN LLM headers into artifacts
-        # The prebuilt lib is built with -DMNN_BUILD_LLM=ON (so it exports the
-        # Llm symbols), but MNN's install step does NOT ship the LLM C++ headers
-        # (llm/llm.hpp) that mnn-sys's wrapper needs under the `llm` feature.
-        # Pull them from the matching MNN source tree (sparse: headers only) and
-        # add them to every artifact so the prebuilt works for `llm` out of the box.
+      - name: Check out the exact MNN source used by build jobs
+        env:
+          MNN_SOURCE_REF: ${{ needs.resolve-mnn.outputs.source_ref }}
+          MNN_SOURCE_COMMIT: ${{ needs.resolve-mnn.outputs.source_commit }}
         run: |
-          git clone --depth 1 --branch 3.6.1 --filter=blob:none --sparse \
-            https://github.com/alibaba/MNN.git mnn-src
-          git -C mnn-src sparse-checkout set transformers/llm/engine/include
-          for dir in artifacts/mnn-*/; do
-            mkdir -p "$dir/include/llm"
-            cp -r mnn-src/transformers/llm/engine/include/llm/. "$dir/include/llm/" 2>/dev/null || true
-          done
+          git clone --depth 1 --branch "$MNN_SOURCE_REF" https://github.com/alibaba/MNN.git mnn-source
+          test "$(git -C mnn-source rev-parse HEAD)" = "$MNN_SOURCE_COMMIT"
 
-      - name: Provide libmnn.a (Unix link name the crate expects)
-        # mnn-sys links `-l mnn` on Unix, which requires `libmnn.a`.
-        # MNN's prebuilt ships `libMNN.a`, so copy it to the name the
-        # linker expects for every non-Windows artifact (Windows ships
-        # `mnn.lib`, which is already correct).
+      - name: Add source metadata, notices, and checksums to each artifact
         run: |
+          set -euo pipefail
           for dir in artifacts/mnn-*/; do
-            lib="$dir/lib"
-            if [ -f "$lib/libMNN.a" ]; then
-              cp "$lib/libMNN.a" "$lib/libmnn.a"
-              echo "Added $lib/libmnn.a"
+            name=${dir%/}
+            name=${name##*/}
+            target=${name#mnn-}
+            backends=(--backend cpu)
+            runner=ubuntu-latest
+            opencl=false
+            vulkan=false
+            cuda=false
+            case "$target" in
+              *-cuda) target=${target%-cuda}; cuda=true; backends+=(--backend cuda) ;;
+              *-opencl) target=${target%-opencl}; opencl=true; backends+=(--backend opencl) ;;
+              *-vulkan) target=${target%-vulkan}; vulkan=true; backends+=(--backend vulkan) ;;
+            esac
+            case "$target" in
+              *windows*) runner=windows-2022 ;;
+              *apple*) runner=macos-latest ;;
+            esac
+            source_patch=''
+            if [[ "$target" == *android* ]]; then
+              patch_sha=$(sha256sum scripts/patch_mnn_llm_cmake.py | awk '{print $1}')
+              source_patch=",\"source_patch_sha256\":\"$patch_sha\""
             fi
+            options="{\"MNN_BUILD_SHARED_LIBS\":false,\"MNN_BUILD_LLM\":true,\"LLM_SUPPORT_HTTP_RESOURCE\":false,\"MNN_BUILD_TOOLS\":false,\"MNN_BUILD_TEST\":false,\"MNN_BUILD_BENCHMARK\":false,\"MNN_BUILD_QUANT\":false,\"MNN_BUILD_TRAIN\":false,\"MNN_CUDA\":$cuda,\"MNN_OPENCL\":$opencl,\"MNN_VULKAN\":$vulkan$source_patch}"
+            toolchain="{\"build_runner\":\"$runner\"}"
+            python scripts/package_mnn_artifact.py "$dir" mnn-source \
+              --target "$target" --link-mode static "${backends[@]}" \
+              --optional-module llm --build-options "$options" --toolchain "$toolchain"
           done
 
       - name: Create release archives
         run: |
+          set -euo pipefail
           cd artifacts
           for dir in mnn-*/; do
             name="${dir%/}"
             tar -czvf "${name}.tar.gz" -C "$dir" .
             echo "Created ${name}.tar.gz"
           done
+          sha256sum *.tar.gz > SHA256SUMS
           ls -la *.tar.gz
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/*.tar.gz
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -923,6 +991,22 @@ jobs:
             os: macos-latest  # Apple Silicon native
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Select MSVC linker for Rust
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}".ToUpperInvariant().Replace('-', '_')
+          $targetArch = if ($target.StartsWith('I686_')) { 'x86' } else { 'x64' }
+          $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\$targetArch\link.exe"
+          if (-not (Test-Path -LiteralPath $linker)) { throw "MSVC linker not found: $linker" }
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_TARGET_${target}_LINKER=$linker"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

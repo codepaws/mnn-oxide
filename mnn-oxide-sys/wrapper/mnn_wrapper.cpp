@@ -1,0 +1,1231 @@
+/**
+ * @file mnn_wrapper.cpp
+ * @brief C wrapper implementation for MNN C++ API
+ */
+
+#include "mnn_wrapper.h"
+#include "mnn_abi_guard.h"
+#include <MNN/Interpreter.hpp>
+#include <MNN/MNNDefine.h>
+#include <MNN/Tensor.hpp>
+#include <MNN/MNNForwardType.h>
+#include <MNN/ImageProcess.hpp>
+#include <MNN/Matrix.h>
+#ifdef MNN_IMGCODECS
+#include <MNN/cv/imgcodecs.hpp>
+#endif
+#ifdef MNN_BUILD_OPENCV
+#include <MNN/cv/imgproc/geometric.hpp>
+#endif
+#ifdef MNN_MODULE_ENABLED
+#include <MNN/expr/Expr.hpp>
+#include <MNN/expr/Executor.hpp>
+#endif
+#include <cstring>
+#include <cstdio>
+#include <limits>
+#include <memory>
+#include <vector>
+
+using namespace MNN;
+
+namespace {
+struct MnnTensorDeleter {
+    void operator()(MNN::Tensor* tensor) const {
+        if (tensor) {
+            MNN::Tensor::destroy(tensor);
+        }
+    }
+};
+
+bool apply_backend_modes(
+    ScheduleConfig& schedule,
+    int memory_mode,
+    int power_mode,
+    int precision_mode,
+    BackendConfig& backend
+) {
+    switch (memory_mode) {
+        case 0: backend.memory = BackendConfig::Memory_Normal; break;
+        case 1: backend.memory = BackendConfig::Memory_High; break;
+        case 2: backend.memory = BackendConfig::Memory_Low; break;
+        default:
+            mnn_oxide_abi::record_error("invalid MNN memory mode");
+            return false;
+    }
+    switch (power_mode) {
+        case 0: backend.power = BackendConfig::Power_Normal; break;
+        case 1: backend.power = BackendConfig::Power_High; break;
+        case 2: backend.power = BackendConfig::Power_Low; break;
+        default:
+            mnn_oxide_abi::record_error("invalid MNN power mode");
+            return false;
+    }
+    switch (precision_mode) {
+        case 0: backend.precision = BackendConfig::Precision_Normal; break;
+        case 1: backend.precision = BackendConfig::Precision_High; break;
+        case 2: backend.precision = BackendConfig::Precision_Low; break;
+        case 3: backend.precision = BackendConfig::Precision_Low_BF16; break;
+        default:
+            mnn_oxide_abi::record_error("invalid MNN precision mode");
+            return false;
+    }
+    schedule.backendConfig = &backend;
+    return true;
+}
+
+#ifdef MNN_RUNTIME_ENABLED
+// Keep MNN's public RuntimeInfo (a pair of shared runtime pointers) behind
+// the opaque C handle. Express::Executor::RuntimeManager is a separate API
+// for Expr executors and is not accepted by Interpreter::createSession.
+struct MnnRuntimeInfoHolder {
+    MNN::RuntimeInfo runtime;
+};
+#endif
+}
+
+/* ============================================================================
+ * Version and Info
+ * ============================================================================ */
+
+const char* mnn_get_version(void) {
+    return mnn_oxide_abi::with_c_boundary<const char*>("", [&]() -> const char* {
+        return getVersion();
+    });
+}
+
+const char* mnn_last_error(void) {
+    return mnn_oxide_abi::error_message();
+}
+
+int mnn_is_backend_available(int type) {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
+        // CPU is always available
+        if (type == MNN_FORWARD_CPU || type == 0) {
+            return 1;
+        }
+        return 0;
+    });
+}
+
+/* ============================================================================
+ * Interpreter Functions
+ * ============================================================================ */
+
+MNNInterpreter* mnn_interpreter_create_from_file(const char* file) {
+    return mnn_oxide_abi::with_c_boundary<MNNInterpreter*>(nullptr, [&]() -> MNNInterpreter* {
+        if (!file) {
+            return nullptr;
+        }
+        Interpreter* interpreter = Interpreter::createFromFile(file);
+        return reinterpret_cast<MNNInterpreter*>(interpreter);
+    });
+}
+
+MNNInterpreter* mnn_interpreter_create_from_buffer(const void* buffer, size_t size) {
+    return mnn_oxide_abi::with_c_boundary<MNNInterpreter*>(nullptr, [&]() -> MNNInterpreter* {
+        if (!buffer || size == 0) {
+            return nullptr;
+        }
+        Interpreter* interpreter = Interpreter::createFromBuffer(buffer, size);
+        return reinterpret_cast<MNNInterpreter*>(interpreter);
+    });
+}
+
+void mnn_interpreter_destroy(MNNInterpreter* interpreter) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (interpreter) {
+            Interpreter::destroy(reinterpret_cast<Interpreter*>(interpreter));
+        }
+    });
+}
+
+MNNSession* mnn_interpreter_create_session(MNNInterpreter* interpreter, int type, int num_thread) {
+    return mnn_oxide_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
+        if (!interpreter) {
+            return nullptr;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+
+        ScheduleConfig config;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_thread > 0 ? num_thread : 4;
+        // Leave backendConfig as nullptr (default)
+
+        Session* session = interp->createSession(config);
+        return reinterpret_cast<MNNSession*>(session);
+    });
+}
+
+MNNSession* mnn_interpreter_create_session_v2(
+    MNNInterpreter* interpreter,
+    int type,
+    int num_thread,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+) {
+    return mnn_oxide_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
+        if (!interpreter) {
+            return nullptr;
+        }
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        ScheduleConfig config;
+        BackendConfig backend;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_thread > 0 ? num_thread : 4;
+        if (!apply_backend_modes(config, memory_mode, power_mode, precision_mode, backend)) {
+            return nullptr;
+        }
+        Session* session = interp->createSession(config);
+        return reinterpret_cast<MNNSession*>(session);
+    });
+}
+
+void mnn_interpreter_release_session(MNNInterpreter* interpreter, MNNSession* session) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!interpreter || !session) {
+            return;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+        interp->releaseSession(sess);
+    });
+}
+
+int mnn_interpreter_run_session(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+        if (!interpreter || !session) {
+            return MNN_ERROR_EXECUTION;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+        ErrorCode result = interp->runSession(sess);
+        return static_cast<int>(result);
+    });
+}
+
+MNNTensor* mnn_interpreter_get_session_input(MNNInterpreter* interpreter, MNNSession* session, const char* name) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+        if (!interpreter || !session) {
+            return nullptr;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+        Tensor* tensor = interp->getSessionInput(sess, name);
+        return reinterpret_cast<MNNTensor*>(tensor);
+    });
+}
+
+MNNTensor* mnn_interpreter_get_session_output(MNNInterpreter* interpreter, MNNSession* session, const char* name) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+        if (!interpreter || !session) {
+            return nullptr;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+        Tensor* tensor = interp->getSessionOutput(sess, name);
+        return reinterpret_cast<MNNTensor*>(tensor);
+    });
+}
+
+void mnn_interpreter_resize_session(MNNInterpreter* interpreter, MNNSession* session) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!interpreter || !session) {
+            return;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+        interp->resizeSession(sess);
+    });
+}
+
+float mnn_interpreter_get_session_memory(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<float>(0.0f, [&]() -> float {
+        if (!interpreter || !session) {
+            return 0.0f;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+        float memory = 0.0f;
+        interp->getSessionInfo(sess, Interpreter::MEMORY, &memory);
+        return memory;
+    });
+}
+
+float mnn_interpreter_get_session_flops(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<float>(0.0f, [&]() -> float {
+        if (!interpreter || !session) {
+            return 0.0f;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+        float flops = 0.0f;
+        interp->getSessionInfo(sess, Interpreter::FLOPS, &flops);
+        return flops;
+    });
+}
+
+int mnn_interpreter_get_session_backend(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
+        if (!interpreter || !session) {
+            return -1;
+        }
+
+        // SessionInfoCode::BACKENDS writes one entry for each configured
+        // pipeline. ScheduleConfig in this wrapper selects one backend.
+        int32_t backends[MNN_FORWARD_ALL] = {};
+        auto* interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto* native_session = reinterpret_cast<Session*>(session);
+        if (!interp->getSessionInfo(native_session, Interpreter::BACKENDS, backends)) {
+            return -1;
+        }
+        return backends[0];
+    });
+}
+
+const char* mnn_interpreter_get_biz_code(MNNInterpreter* interpreter) {
+    return mnn_oxide_abi::with_c_boundary<const char*>("", [&]() -> const char* {
+        if (!interpreter) {
+            return "";
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        return interp->bizCode();
+    });
+}
+
+const char* mnn_interpreter_get_uuid(MNNInterpreter* interpreter) {
+    return mnn_oxide_abi::with_c_boundary<const char*>("", [&]() -> const char* {
+        if (!interpreter) {
+            return "";
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        return interp->uuid();
+    });
+}
+
+/* ============================================================================
+ * Tensor Functions
+ * ============================================================================ */
+
+int mnn_tensor_get_dimensions(const MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
+        if (!tensor) {
+            return 0;
+        }
+
+        auto t = reinterpret_cast<const Tensor*>(tensor);
+        return t->dimensions();
+    });
+}
+
+int mnn_tensor_get_dim(const MNNTensor* tensor, int index) {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
+        if (!tensor || index < 0) {
+            return 0;
+        }
+
+        auto t = reinterpret_cast<const Tensor*>(tensor);
+        if (index >= t->dimensions()) {
+            return 0;
+        }
+        return t->length(index);
+    });
+}
+
+int mnn_tensor_get_element_count(const MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
+        if (!tensor) {
+            return 0;
+        }
+
+        auto t = reinterpret_cast<const Tensor*>(tensor);
+        return t->elementSize();
+    });
+}
+
+int mnn_tensor_get_size(const MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
+        if (!tensor) {
+            return 0;
+        }
+
+        auto t = reinterpret_cast<const Tensor*>(tensor);
+        return t->size();
+    });
+}
+
+void* mnn_tensor_get_host_data(MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<void*>(nullptr, [&]() -> void* {
+        if (!tensor) {
+            return nullptr;
+        }
+
+        auto t = reinterpret_cast<Tensor*>(tensor);
+        return t->host<void>();
+    });
+}
+
+int mnn_tensor_get_type_code(const MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
+        if (!tensor) {
+            return 0;
+        }
+
+        auto t = reinterpret_cast<const Tensor*>(tensor);
+        auto type = t->getType();
+        return (type.code << 8) | type.bits;
+    });
+}
+
+int mnn_tensor_get_dimension_type(const MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
+        if (!tensor) {
+            return 0;
+        }
+
+        auto t = reinterpret_cast<const Tensor*>(tensor);
+        return static_cast<int>(t->getDimensionType());
+    });
+}
+
+/* ============================================================================
+ * ImageProcess Functions
+ * ============================================================================ */
+
+#ifdef MNN_IMAGE_PROCESS
+
+MNNImageProcess* mnn_image_process_create(const MNNImageProcessConfig* config) {
+    return mnn_oxide_abi::with_c_boundary<MNNImageProcess*>(nullptr, [&]() -> MNNImageProcess* {
+        if (!config) {
+            return nullptr;
+        }
+
+        MNN::CV::ImageProcess::Config cfg;
+        cfg.filterType = static_cast<MNN::CV::Filter>(config->filterType);
+        cfg.sourceFormat = static_cast<MNN::CV::ImageFormat>(config->sourceFormat);
+        cfg.destFormat = static_cast<MNN::CV::ImageFormat>(config->destFormat);
+        cfg.wrap = static_cast<MNN::CV::Wrap>(config->wrap);
+
+        for (int i = 0; i < 4; ++i) {
+            cfg.mean[i] = config->mean[i];
+            cfg.normal[i] = config->normal[i];
+        }
+
+        auto process = MNN::CV::ImageProcess::create(cfg);
+        return reinterpret_cast<MNNImageProcess*>(process);
+    });
+}
+
+void mnn_image_process_destroy(MNNImageProcess* process) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (process) {
+            MNN::CV::ImageProcess::destroy(reinterpret_cast<MNN::CV::ImageProcess*>(process));
+        }
+    });
+}
+
+void mnn_image_process_set_matrix(MNNImageProcess* process, const MNNMatrix* matrix) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!process || !matrix) {
+            return;
+        }
+
+        auto proc = reinterpret_cast<MNN::CV::ImageProcess*>(process);
+        auto mat = reinterpret_cast<const MNN::CV::Matrix*>(matrix);
+        proc->setMatrix(*mat);
+    });
+}
+
+int mnn_image_process_convert(MNNImageProcess* process, const uint8_t* source,
+                               int iw, int ih, int stride, MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+        if (!process || !source || !tensor) {
+            return MNN_ERROR_EXECUTION;
+        }
+
+        auto proc = reinterpret_cast<MNN::CV::ImageProcess*>(process);
+        auto t = reinterpret_cast<MNN::Tensor*>(tensor);
+
+        MNN::ErrorCode result = proc->convert(source, iw, ih, stride, t);
+        return static_cast<int>(result);
+    });
+}
+
+MNNTensor* mnn_image_tensor_create(int w, int h, int bpp, void* data) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+        if (w <= 0 || h <= 0 || bpp <= 0) {
+            return nullptr;
+        }
+        if (static_cast<size_t>(w) > std::numeric_limits<size_t>::max() / static_cast<size_t>(h) ||
+            static_cast<size_t>(w) * static_cast<size_t>(h) >
+                std::numeric_limits<size_t>::max() / static_cast<size_t>(bpp)) {
+            return nullptr;
+        }
+        const size_t requested_bytes = static_cast<size_t>(w) * static_cast<size_t>(h) *
+                                       static_cast<size_t>(bpp);
+        // Tensor::size() is an int in MNN 3.6.1; larger values can truncate
+        // during allocation even when size_t arithmetic itself is valid.
+        if (requested_bytes > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            return nullptr;
+        }
+
+        auto tensor = MNN::CV::ImageProcess::createImageTensor<uint8_t>(w, h, bpp, nullptr);
+        if (tensor && (tensor->size() < 0 ||
+                       static_cast<size_t>(tensor->size()) < requested_bytes)) {
+            MNN::Tensor::destroy(tensor);
+            return nullptr;
+        }
+        if (tensor && data) {
+            if (tensor->host<uint8_t>() == nullptr) {
+                MNN::Tensor::destroy(tensor);
+                return nullptr;
+            }
+            std::memcpy(tensor->host<uint8_t>(), data, requested_bytes);
+        }
+        return reinterpret_cast<MNNTensor*>(tensor);
+    });
+}
+
+void mnn_image_tensor_destroy(MNNTensor* tensor) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (tensor) {
+            MNN::Tensor::destroy(reinterpret_cast<MNN::Tensor*>(tensor));
+        }
+    });
+}
+
+/* ============================================================================
+ * MNN CV Image Codecs (imread/imwrite/resize)
+ * Requires: -DMNN_BUILD_OPENCV=ON -DMNN_IMGCODECS=ON
+ * ============================================================================ */
+
+MNNTensor* mnn_imread(const char* path, int flags) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+    #ifdef MNN_IMGCODECS
+        if (!path) {
+            return nullptr;
+        }
+
+        auto varp = MNN::CV::imread(std::string(path), flags);
+        if (varp == nullptr) {
+            return nullptr;
+        }
+
+        // Compute the VARP to get actual data
+        MNN::Express::Variable::compute({varp});
+
+        // Get tensor from VARP after computation
+        auto tensor = varp->getTensor();
+        if (!tensor) {
+            return nullptr;
+        }
+
+        // Get tensor info
+        auto type = tensor->getType();
+        auto dims = tensor->shape();
+
+        // Create a new tensor with the same shape and type
+        std::unique_ptr<MNN::Tensor, MnnTensorDeleter> owned_tensor(
+            MNN::Tensor::create(dims, type, nullptr, MNN::Tensor::DimensionType::TENSORFLOW));
+        if (!owned_tensor) {
+            return nullptr;
+        }
+
+        // Copy data
+        auto srcHost = tensor->host<uint8_t>();
+        auto dstHost = owned_tensor->host<uint8_t>();
+        if (srcHost && dstHost) {
+            auto bytes = owned_tensor->size();
+            memcpy(dstHost, srcHost, bytes);
+        }
+
+        // Return the owned tensor (caller must destroy it using mnn_tensor_destroy)
+        return reinterpret_cast<MNNTensor*>(owned_tensor.release());
+    #else
+        (void)path;
+        (void)flags;
+        return nullptr;
+    #endif
+    });
+}
+
+int mnn_imwrite(const char* path, const MNNTensor* tensor, const void* params) {
+    return mnn_oxide_abi::with_c_boundary<int>(-1, [&]() -> int {
+    #ifdef MNN_IMGCODECS
+        if (!path || !tensor) {
+            return -1;
+        }
+
+        auto t = reinterpret_cast<const MNN::Tensor*>(tensor);
+
+        // Create VARP from tensor: use Expr::create() and Variable::create()
+        // const_cast is safe here as we don't modify the tensor and don't take ownership
+        auto expr = MNN::Express::Expr::create(const_cast<MNN::Tensor*>(t), false);
+        auto varp = MNN::Express::Variable::create(expr, 0);
+
+        // Convert params to std::vector<int> (not currently used from Rust)
+        std::vector<int> empty_params;
+        bool result = MNN::CV::imwrite(std::string(path), varp, empty_params);
+        return result ? 0 : -1;
+    #else
+        (void)path;
+        (void)tensor;
+        (void)params;
+        return -1;
+    #endif
+    });
+}
+
+MNNTensor* mnn_resize(const MNNTensor* src, int dstWidth, int dstHeight, int filter) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+    #ifdef MNN_BUILD_OPENCV
+        if (!src || dstWidth <= 0 || dstHeight <= 0) {
+            return nullptr;
+        }
+
+        auto srcTensor = reinterpret_cast<const MNN::Tensor*>(src);
+
+        // Filter: 0=nearest, 1=bilinear, 2=bicubic
+        int method = MNN::CV::INTER_LINEAR;
+        if (filter == 0) {
+            method = MNN::CV::INTER_NEAREST;
+        } else if (filter == 2) {
+            method = MNN::CV::INTER_CUBIC;
+        }
+
+        // Create VARP from tensor: use Expr::create() and Variable::create()
+        // const_cast is safe here as we don't modify the tensor and don't take ownership
+        auto expr = MNN::Express::Expr::create(const_cast<MNN::Tensor*>(srcTensor), false);
+        auto varp = MNN::Express::Variable::create(expr, 0);
+
+        // MNN::CV::resize signature: resize(VARP src, Size dsize, double fx, double fy, int interpolation, ...)
+        MNN::CV::Size dsize = {dstWidth, dstHeight};
+        auto resized = MNN::CV::resize(varp, dsize, 0, 0, method);
+
+        if (resized == nullptr) {
+            return nullptr;
+        }
+
+        // Compute the VARP to get actual data
+        MNN::Express::Variable::compute({resized});
+
+        // Get tensor from VARP after computation
+        auto tensor = resized->getTensor();
+        if (!tensor) {
+            return nullptr;
+        }
+
+        // Get tensor info
+        auto type = tensor->getType();
+        auto dims = tensor->shape();
+
+        // Create a new tensor with the same shape and type
+        std::unique_ptr<MNN::Tensor, MnnTensorDeleter> owned_tensor(
+            MNN::Tensor::create(dims, type, nullptr, MNN::Tensor::DimensionType::TENSORFLOW));
+        if (!owned_tensor) {
+            return nullptr;
+        }
+
+        // Copy data
+        auto srcHost = tensor->host<uint8_t>();
+        auto dstHost = owned_tensor->host<uint8_t>();
+        if (srcHost && dstHost) {
+            auto bytes = owned_tensor->size();
+            memcpy(dstHost, srcHost, bytes);
+        }
+
+        // Return the owned tensor (caller must destroy it using mnn_tensor_destroy)
+        return reinterpret_cast<MNNTensor*>(owned_tensor.release());
+    #else
+        (void)src;
+        (void)dstWidth;
+        (void)dstHeight;
+        (void)filter;
+        return nullptr;
+    #endif
+    });
+}
+
+#endif /* MNN_IMAGE_PROCESS */
+
+/* ============================================================================
+ * Matrix Functions
+ * ============================================================================ */
+
+MNNMatrix* mnn_matrix_create_identity(void) {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
+        matrix->setIdentity();
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
+    });
+}
+
+MNNMatrix* mnn_matrix_create_scale(float sx, float sy) {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
+        matrix->setScale(sx, sy);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
+    });
+}
+
+MNNMatrix* mnn_matrix_create_translate(float dx, float dy) {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
+        matrix->setTranslate(dx, dy);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
+    });
+}
+
+MNNMatrix* mnn_matrix_create_rotate(float degrees) {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
+        matrix->setRotate(degrees);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
+    });
+}
+
+MNNMatrix* mnn_matrix_create(const float* data) {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+        if (!data) {
+            return nullptr;
+        }
+
+        std::unique_ptr<MNN::CV::Matrix> matrix(new MNN::CV::Matrix());
+        matrix->set9(data);
+        return reinterpret_cast<MNNMatrix*>(matrix.release());
+    });
+}
+
+MNNMatrix* mnn_matrix_clone(const MNNMatrix* matrix) {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+        if (!matrix) {
+            return nullptr;
+        }
+
+        auto src = reinterpret_cast<const MNN::CV::Matrix*>(matrix);
+        std::unique_ptr<MNN::CV::Matrix> dst(new MNN::CV::Matrix(*src));
+        return reinterpret_cast<MNNMatrix*>(dst.release());
+    });
+}
+
+void mnn_matrix_destroy(MNNMatrix* matrix) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (matrix) {
+            delete reinterpret_cast<MNN::CV::Matrix*>(matrix);
+        }
+    });
+}
+
+float mnn_matrix_get(const MNNMatrix* matrix, int row, int col) {
+    return mnn_oxide_abi::with_c_boundary<float>(0.0f, [&]() -> float {
+        if (!matrix || row < 0 || row > 2 || col < 0 || col > 2) {
+            return 0.0f;
+        }
+
+        auto m = reinterpret_cast<const MNN::CV::Matrix*>(matrix);
+        int index = row * 3 + col;
+        return m->get(index);
+    });
+}
+
+void mnn_matrix_set(MNNMatrix* matrix, int row, int col, float value) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!matrix || row < 0 || row > 2 || col < 0 || col > 2) {
+            return;
+        }
+
+        auto m = reinterpret_cast<MNN::CV::Matrix*>(matrix);
+        int index = row * 3 + col;
+        m->set(index, value);
+    });
+}
+
+MNNMatrix* mnn_matrix_multiply(const MNNMatrix* a, const MNNMatrix* b) {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+        if (!a || !b) {
+            return nullptr;
+        }
+
+        auto ma = reinterpret_cast<const MNN::CV::Matrix*>(a);
+        auto mb = reinterpret_cast<const MNN::CV::Matrix*>(b);
+        std::unique_ptr<MNN::CV::Matrix> result(new MNN::CV::Matrix());
+        result->setConcat(*ma, *mb);
+        return reinterpret_cast<MNNMatrix*>(result.release());
+    });
+}
+
+MNNMatrix* mnn_matrix_invert(const MNNMatrix* matrix) {
+    return mnn_oxide_abi::with_c_boundary<MNNMatrix*>(nullptr, [&]() -> MNNMatrix* {
+        if (!matrix) {
+            return nullptr;
+        }
+
+        auto m = reinterpret_cast<const MNN::CV::Matrix*>(matrix);
+        std::unique_ptr<MNN::CV::Matrix> result(new MNN::CV::Matrix());
+        if (!m->invert(result.get())) {
+            return nullptr;
+        }
+        return reinterpret_cast<MNNMatrix*>(result.release());
+    });
+}
+
+/* ============================================================================
+ * Tensor Advanced Functions (GPU Memory Operations)
+ * ============================================================================ */
+
+int mnn_tensor_copy_from_host(MNNTensor* dest, const MNNTensor* host_tensor) {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+        if (!dest || !host_tensor) {
+            return MNN_ERROR_EXECUTION;
+        }
+
+        auto d = reinterpret_cast<MNN::Tensor*>(dest);
+        auto h = reinterpret_cast<const MNN::Tensor*>(host_tensor);
+
+        bool result = d->copyFromHostTensor(h);
+        return result ? MNN_ERROR_NONE : MNN_ERROR_EXECUTION;
+    });
+}
+
+int mnn_tensor_copy_to_host(MNNTensor* host_tensor, const MNNTensor* dest) {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+        if (!host_tensor || !dest) {
+            return MNN_ERROR_EXECUTION;
+        }
+
+        auto h = reinterpret_cast<MNN::Tensor*>(host_tensor);
+        auto d = reinterpret_cast<const MNN::Tensor*>(dest);
+
+        bool result = d->copyToHostTensor(h);
+        return result ? MNN_ERROR_NONE : MNN_ERROR_EXECUTION;
+    });
+}
+
+MNNTensor* mnn_tensor_create_host_from_device(const MNNTensor* device_tensor, int copy_data) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+        if (!device_tensor) {
+            return nullptr;
+        }
+        auto device = reinterpret_cast<const MNN::Tensor*>(device_tensor);
+        auto* host = MNN::Tensor::createHostTensorFromDevice(device, copy_data != 0);
+        return reinterpret_cast<MNNTensor*>(host);
+    });
+}
+
+MNNTensor* mnn_tensor_create_device(
+    const int* shape,
+    int dimensions,
+    int type_code,
+    int format
+) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+        // MNN 3.6.1 stores tensor dimensions in a fixed array sized by
+        // MNN_MAX_TENSOR_DIM (9).
+        if (!shape || dimensions <= 0 || dimensions > 9 || type_code < 0 ||
+            (type_code & ~0xFFFF) != 0) {
+            return nullptr;
+        }
+
+        const int type_kind = (type_code >> 8) & 0xFF;
+        const int type_bits = type_code & 0xFF;
+        const bool valid_type =
+            (type_kind == 0 && (type_bits == 8 || type_bits == 16 || type_bits == 32)) ||
+            (type_kind == 1 && type_bits == 8) ||
+            (type_kind == 2 && (type_bits == 16 || type_bits == 32 || type_bits == 64)) ||
+            (type_kind == 4 && type_bits == 16);
+        if (!valid_type) {
+            return nullptr;
+        }
+
+        // Convert to std::vector<int>
+        std::vector<int> shape_vec;
+        shape_vec.reserve(static_cast<size_t>(dimensions));
+        size_t element_count = 1;
+        for (int i = 0; i < dimensions; i++) {
+            if (shape[i] <= 0 ||
+                element_count > static_cast<size_t>(std::numeric_limits<int>::max()) /
+                                    static_cast<size_t>(shape[i])) {
+                return nullptr;
+            }
+            element_count *= static_cast<size_t>(shape[i]);
+            shape_vec.push_back(shape[i]);
+        }
+
+        // Rust encodes Halide type and bit width in the upper/lower bytes;
+        // device tensors use one scalar lane.
+        halide_type_t type;
+        type.code = static_cast<decltype(type.code)>(type_kind);
+        type.bits = static_cast<decltype(type.bits)>(type_bits);
+        type.lanes = 1;
+        auto tensor = MNN::Tensor::createDevice(
+            shape_vec, type, static_cast<MNN::Tensor::DimensionType>(format));
+        return reinterpret_cast<MNNTensor*>(tensor);
+    });
+}
+
+MNNTensor* mnn_tensor_clone(const MNNTensor* tensor, int deep_copy) {
+    return mnn_oxide_abi::with_c_boundary<MNNTensor*>(nullptr, [&]() -> MNNTensor* {
+        if (!tensor) {
+            return nullptr;
+        }
+
+        auto t = reinterpret_cast<const MNN::Tensor*>(tensor);
+
+        // Use MNN's static clone method
+        auto cloned = MNN::Tensor::clone(t, deep_copy != 0);
+        return reinterpret_cast<MNNTensor*>(cloned);
+    });
+}
+
+void mnn_tensor_destroy(MNNTensor* tensor) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (tensor) {
+            MNN::Tensor::destroy(reinterpret_cast<MNN::Tensor*>(tensor));
+        }
+    });
+}
+
+uint64_t mnn_tensor_device_id(const MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<uint64_t>(0, [&]() -> uint64_t {
+        if (!tensor) {
+            return 0;
+        }
+
+        // MNN doesn't directly expose device ID per tensor
+        // This is a placeholder - actual implementation would need MNN backend info
+        return 0;
+    });
+}
+
+int mnn_tensor_get_backend(const MNNTensor* tensor) {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_FORWARD_CPU, [&]() -> int {
+        if (!tensor) {
+            return MNN_FORWARD_CPU;
+        }
+
+        // Return the backend type - this requires MNN internal access
+        // For now, return CPU as default
+        return MNN_FORWARD_CPU;
+    });
+}
+
+/* ============================================================================
+ * Session Advanced Functions
+ * ============================================================================ */
+
+void mnn_interpreter_set_session_mode(MNNInterpreter* interpreter, int mode) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!interpreter) {
+            return;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        // Mode mapping depends on MNN's SessionMode enum
+        interp->setSessionMode(static_cast<Interpreter::SessionMode>(mode));
+    });
+}
+
+void mnn_interpreter_set_cache_file(MNNInterpreter* interpreter, const char* path, size_t key_size) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!interpreter || !path) {
+            return;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        interp->setCacheFile(path, key_size);
+    });
+}
+
+int mnn_interpreter_update_cache(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<int>(MNN_ERROR_EXECUTION, [&]() -> int {
+        if (!interpreter || !session) {
+            return MNN_ERROR_EXECUTION;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+        ErrorCode result = interp->updateCacheFile(sess);
+        return static_cast<int>(result);
+    });
+}
+
+void mnn_interpreter_set_external_file(MNNInterpreter* interpreter, const char* path, size_t flag) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!interpreter || !path) {
+            return;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        interp->setExternalFile(path, flag);
+    });
+}
+
+MNNStringArray mnn_interpreter_get_input_names(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<MNNStringArray>({nullptr, 0}, [&]() -> MNNStringArray {
+        MNNStringArray result = { nullptr, 0 };
+
+        if (!interpreter || !session) {
+            return result;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+
+        auto& inputs = interp->getSessionInputAll(sess);
+        if (inputs.empty()) {
+            return result;
+        }
+
+        std::unique_ptr<char*[]> names(new char*[inputs.size()]{});
+        std::vector<std::unique_ptr<char[]>> storage;
+        storage.reserve(inputs.size());
+        size_t idx = 0;
+        for (const auto& pair : inputs) {
+            std::unique_ptr<char[]> name(new char[pair.first.length() + 1]);
+            strcpy(name.get(), pair.first.c_str());
+            names[idx++] = name.get();
+            storage.push_back(std::move(name));
+        }
+        for (auto& name : storage) {
+            name.release();
+        }
+        result.count = static_cast<int>(inputs.size());
+        result.names = names.release();
+
+        return result;
+    });
+}
+
+MNNStringArray mnn_interpreter_get_output_names(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<MNNStringArray>({nullptr, 0}, [&]() -> MNNStringArray {
+        MNNStringArray result = { nullptr, 0 };
+
+        if (!interpreter || !session) {
+            return result;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+
+        auto& outputs = interp->getSessionOutputAll(sess);
+        if (outputs.empty()) {
+            return result;
+        }
+
+        std::unique_ptr<char*[]> names(new char*[outputs.size()]{});
+        std::vector<std::unique_ptr<char[]>> storage;
+        storage.reserve(outputs.size());
+        size_t idx = 0;
+        for (const auto& pair : outputs) {
+            std::unique_ptr<char[]> name(new char[pair.first.length() + 1]);
+            strcpy(name.get(), pair.first.c_str());
+            names[idx++] = name.get();
+            storage.push_back(std::move(name));
+        }
+        for (auto& name : storage) {
+            name.release();
+        }
+        result.count = static_cast<int>(outputs.size());
+        result.names = names.release();
+
+        return result;
+    });
+}
+
+void mnn_string_array_free(MNNStringArray* array) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!array || !array->names) {
+            return;
+        }
+
+        for (int i = 0; i < array->count; i++) {
+            delete[] array->names[i];
+        }
+        delete[] array->names;
+        array->names = nullptr;
+        array->count = 0;
+    });
+}
+
+void mnn_interpreter_resize_tensor(MNNInterpreter* interpreter, MNNTensor* tensor, const int* shape, int dims) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+        if (!interpreter || !tensor || !shape || dims <= 0) {
+            return;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto t = reinterpret_cast<Tensor*>(tensor);
+
+        std::vector<int> shape_vec(shape, shape + dims);
+        interp->resizeTensor(t, shape_vec);
+    });
+}
+
+int mnn_interpreter_get_session_op_count(MNNInterpreter* interpreter, MNNSession* session) {
+    return mnn_oxide_abi::with_c_boundary<int>(0, [&]() -> int {
+        if (!interpreter || !session) {
+            return 0;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto sess = reinterpret_cast<Session*>(session);
+
+        // Get FLOPS as a measure of operator complexity
+        float flops = 0.0f;
+        interp->getSessionInfo(sess, Interpreter::FLOPS, &flops);
+        return static_cast<int>(flops);
+    });
+}
+
+/* ============================================================================
+ * Runtime Management (Multi-Session Sharing)
+ * Note: Requires MNN with full Express/Module support
+ * ============================================================================ */
+
+MNNRuntimeManager* mnn_runtime_manager_create(int type, int num_threads) {
+    return mnn_oxide_abi::with_c_boundary<MNNRuntimeManager*>(nullptr, [&]() -> MNNRuntimeManager* {
+    #ifdef MNN_RUNTIME_ENABLED
+        // Create schedule config
+        ScheduleConfig config;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_threads > 0 ? num_threads : 4;
+
+        // Interpreter::createSession accepts RuntimeInfo. The similarly named
+        // Express::Executor::RuntimeManager belongs to the Expr/Module API and
+        // cannot be passed to the Interpreter session API.
+        std::vector<ScheduleConfig> configs{config};
+        auto* runtime = new MnnRuntimeInfoHolder{
+            Interpreter::createRuntime(configs)
+        };
+        return reinterpret_cast<MNNRuntimeManager*>(runtime);
+    #else
+        // Runtime manager not enabled, return nullptr
+        (void)type;
+        (void)num_threads;
+        return nullptr;
+    #endif
+    });
+}
+
+MNNRuntimeManager* mnn_runtime_manager_create_v2(
+    int type,
+    int num_threads,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+) {
+    return mnn_oxide_abi::with_c_boundary<MNNRuntimeManager*>(nullptr, [&]() -> MNNRuntimeManager* {
+    #ifdef MNN_RUNTIME_ENABLED
+        ScheduleConfig config;
+        BackendConfig backend;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_threads > 0 ? num_threads : 4;
+        if (!apply_backend_modes(config, memory_mode, power_mode, precision_mode, backend)) {
+            return nullptr;
+        }
+        std::vector<ScheduleConfig> configs{config};
+        auto* runtime = new MnnRuntimeInfoHolder{Interpreter::createRuntime(configs)};
+        return reinterpret_cast<MNNRuntimeManager*>(runtime);
+    #else
+        (void)type;
+        (void)num_threads;
+        (void)memory_mode;
+        (void)power_mode;
+        (void)precision_mode;
+        return nullptr;
+    #endif
+    });
+}
+
+void mnn_runtime_manager_destroy(MNNRuntimeManager* manager) {
+    mnn_oxide_abi::with_c_boundary_void([&] {
+    #ifdef MNN_RUNTIME_ENABLED
+        if (manager) {
+            delete reinterpret_cast<MnnRuntimeInfoHolder*>(manager);
+        }
+    #else
+        (void)manager;
+    #endif
+    });
+}
+
+MNNSession* mnn_interpreter_create_session_with_runtime(
+    MNNInterpreter* interpreter,
+    MNNRuntimeManager* runtime,
+    int type,
+    int num_threads
+) {
+    return mnn_oxide_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
+    #ifdef MNN_RUNTIME_ENABLED
+        if (!interpreter || !runtime) {
+            return nullptr;
+        }
+
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto runtime_info = reinterpret_cast<MnnRuntimeInfoHolder*>(runtime);
+
+        // Create session config
+        ScheduleConfig config;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_threads > 0 ? num_threads : 4;
+
+        Session* session = interp->createSession(config, runtime_info->runtime);
+        return reinterpret_cast<MNNSession*>(session);
+    #else
+        (void)interpreter;
+        (void)runtime;
+        (void)type;
+        (void)num_threads;
+        return nullptr;
+    #endif
+    });
+}
+
+MNNSession* mnn_interpreter_create_session_with_runtime_v2(
+    MNNInterpreter* interpreter,
+    MNNRuntimeManager* runtime,
+    int type,
+    int num_threads,
+    int memory_mode,
+    int power_mode,
+    int precision_mode
+) {
+    return mnn_oxide_abi::with_c_boundary<MNNSession*>(nullptr, [&]() -> MNNSession* {
+    #ifdef MNN_RUNTIME_ENABLED
+        if (!interpreter || !runtime) {
+            return nullptr;
+        }
+        auto interp = reinterpret_cast<Interpreter*>(interpreter);
+        auto runtime_info = reinterpret_cast<MnnRuntimeInfoHolder*>(runtime);
+        ScheduleConfig config;
+        BackendConfig backend;
+        config.type = static_cast<MNNForwardType>(type);
+        config.numThread = num_threads > 0 ? num_threads : 4;
+        if (!apply_backend_modes(config, memory_mode, power_mode, precision_mode, backend)) {
+            return nullptr;
+        }
+        Session* session = interp->createSession(config, runtime_info->runtime);
+        return reinterpret_cast<MNNSession*>(session);
+    #else
+        (void)interpreter;
+        (void)runtime;
+        (void)type;
+        (void)num_threads;
+        (void)memory_mode;
+        (void)power_mode;
+        (void)precision_mode;
+        return nullptr;
+    #endif
+    });
+}

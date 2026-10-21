@@ -1,7 +1,7 @@
 //! Raw FFI bindings for MNN (Mobile Neural Network) inference engine.
 //!
 //! This crate provides unsafe raw bindings to the MNN C wrapper API.
-//! Users should prefer the safe `mnn-rs` crate instead.
+//! Users should prefer the safe `mnn-oxide` crate instead.
 //!
 //! # Safety
 //!
@@ -14,7 +14,18 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+// Exercise the pure acquisition/link configuration shared with build.rs.
+#[cfg(test)]
+#[path = "../build_config.rs"]
+mod build_config_tests;
+
 use std::os::raw::{c_char, c_int, c_void};
+
+/// Release version declared by the selected MNN headers at build time.
+///
+/// This identifies the header set used to compile the wrapper. It does not
+/// prove that the linked library was built from those headers.
+pub const SELECTED_HEADER_VERSION: &str = env!("MNN_SELECTED_HEADER_VERSION");
 
 // ============================================================================
 // Forward declarations (opaque handles)
@@ -61,13 +72,14 @@ pub struct MNNMatrix {
 
 /// Backend type for computation (matches MNNForwardType)
 pub const MNN_FORWARD_CPU: c_int = 0;
-pub const MNN_FORWARD_AUTO: c_int = 0;
-pub const MNN_FORWARD_OPENCL: c_int = 1;
-pub const MNN_FORWARD_OPENGL: c_int = 2;
-pub const MNN_FORWARD_VULKAN: c_int = 3;
-pub const MNN_FORWARD_METAL: c_int = 4;
-pub const MNN_FORWARD_CUDA: c_int = 5;
-pub const MNN_FORWARD_NPU: c_int = 6;
+pub const MNN_FORWARD_AUTO: c_int = 4;
+pub const MNN_FORWARD_OPENCL: c_int = 3;
+pub const MNN_FORWARD_OPENGL: c_int = 6;
+pub const MNN_FORWARD_VULKAN: c_int = 7;
+pub const MNN_FORWARD_METAL: c_int = 1;
+pub const MNN_FORWARD_CUDA: c_int = 2;
+/// Compatibility alias for MNN's generic `MNN_FORWARD_USER_0` slot.
+pub const MNN_FORWARD_NPU: c_int = 8;
 
 /// Error codes
 pub const MNN_ERROR_NONE: c_int = 0;
@@ -144,7 +156,14 @@ extern "C" {
     /// Get MNN version string
     pub fn mnn_get_version() -> *const c_char;
 
-    /// Check if a backend is available
+    /// Get the last C++ exception captured by a wrapper call on this thread.
+    /// The pointer is valid until the next guarded wrapper call.
+    pub fn mnn_last_error() -> *const c_char;
+
+    /// Legacy availability stub: returns 1 for CPU and 0 for other backend
+    /// types because native accelerator probing is not implemented. A zero
+    /// result does not confirm that a backend is unavailable.
+    #[deprecated(note = "non-CPU availability is unprobed; use mnn-oxide BackendAvailability")]
     pub fn mnn_is_backend_available(type_: c_int) -> c_int;
 
     // ========================================================================
@@ -155,7 +174,10 @@ extern "C" {
     pub fn mnn_interpreter_create_from_file(file: *const c_char) -> *mut MNNInterpreter;
 
     /// Create interpreter from buffer
-    pub fn mnn_interpreter_create_from_buffer(buffer: *const c_void, size: usize) -> *mut MNNInterpreter;
+    pub fn mnn_interpreter_create_from_buffer(
+        buffer: *const c_void,
+        size: usize,
+    ) -> *mut MNNInterpreter;
 
     /// Destroy interpreter
     pub fn mnn_interpreter_destroy(interpreter: *mut MNNInterpreter);
@@ -165,6 +187,16 @@ extern "C" {
         interpreter: *mut MNNInterpreter,
         type_: c_int,
         num_thread: c_int,
+    ) -> *mut MNNSession;
+
+    /// Create a session with explicit memory, power, and precision modes.
+    pub fn mnn_interpreter_create_session_v2(
+        interpreter: *mut MNNInterpreter,
+        type_: c_int,
+        num_thread: c_int,
+        memory_mode: c_int,
+        power_mode: c_int,
+        precision_mode: c_int,
     ) -> *mut MNNSession;
 
     /// Release session
@@ -210,6 +242,12 @@ extern "C" {
         interpreter: *mut MNNInterpreter,
         session: *mut MNNSession,
     ) -> f32;
+
+    /// Get the first backend MNN assigned to a session, or -1 if unavailable.
+    pub fn mnn_interpreter_get_session_backend(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> c_int;
 
     /// Get business code
     pub fn mnn_interpreter_get_biz_code(interpreter: *mut MNNInterpreter) -> *const c_char;
@@ -266,7 +304,12 @@ extern "C" {
     ) -> c_int;
 
     /// Create image tensor
-    pub fn mnn_image_tensor_create(w: c_int, h: c_int, bpp: c_int, data: *mut c_void) -> *mut MNNTensor;
+    pub fn mnn_image_tensor_create(
+        w: c_int,
+        h: c_int,
+        bpp: c_int,
+        data: *mut c_void,
+    ) -> *mut MNNTensor;
 
     /// Destroy image tensor
     pub fn mnn_image_tensor_destroy(tensor: *mut MNNTensor);
@@ -275,10 +318,19 @@ extern "C" {
     pub fn mnn_imread(path: *const c_char, flags: c_int) -> *mut MNNTensor;
 
     /// Write image to file using MNN CV (requires MNN_IMGCODECS)
-    pub fn mnn_imwrite(path: *const c_char, tensor: *const MNNTensor, params: *const c_void) -> c_int;
+    pub fn mnn_imwrite(
+        path: *const c_char,
+        tensor: *const MNNTensor,
+        params: *const c_void,
+    ) -> c_int;
 
     /// Resize image tensor (requires MNN_BUILD_OPENCV)
-    pub fn mnn_resize(src: *const MNNTensor, dstWidth: c_int, dstHeight: c_int, filter: c_int) -> *mut MNNTensor;
+    pub fn mnn_resize(
+        src: *const MNNTensor,
+        dstWidth: c_int,
+        dstHeight: c_int,
+        filter: c_int,
+    ) -> *mut MNNTensor;
 
     // ========================================================================
     // Matrix Functions
@@ -326,6 +378,12 @@ extern "C" {
 
     /// Copy data from device tensor to host tensor
     pub fn mnn_tensor_copy_to_host(host_tensor: *mut MNNTensor, dest: *const MNNTensor) -> c_int;
+
+    /// Create a host tensor with the same shape/type as a device tensor.
+    pub fn mnn_tensor_create_host_from_device(
+        device_tensor: *const MNNTensor,
+        copy_data: c_int,
+    ) -> *mut MNNTensor;
 
     /// Create a device tensor with given shape
     pub fn mnn_tensor_create_device(
@@ -381,19 +439,36 @@ extern "C" {
     pub fn mnn_interpreter_set_session_mode(interpreter: *mut MNNInterpreter, mode: c_int);
 
     /// Set cache file for optimization
-    pub fn mnn_interpreter_set_cache_file(interpreter: *mut MNNInterpreter, path: *const c_char, key_size: usize);
+    pub fn mnn_interpreter_set_cache_file(
+        interpreter: *mut MNNInterpreter,
+        path: *const c_char,
+        key_size: usize,
+    );
 
     /// Update cache from session
-    pub fn mnn_interpreter_update_cache(interpreter: *mut MNNInterpreter, session: *mut MNNSession) -> c_int;
+    pub fn mnn_interpreter_update_cache(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> c_int;
 
     /// Set external file for model
-    pub fn mnn_interpreter_set_external_file(interpreter: *mut MNNInterpreter, path: *const c_char, flag: usize);
+    pub fn mnn_interpreter_set_external_file(
+        interpreter: *mut MNNInterpreter,
+        path: *const c_char,
+        flag: usize,
+    );
 
     /// Get input tensor names
-    pub fn mnn_interpreter_get_input_names(interpreter: *mut MNNInterpreter, session: *mut MNNSession) -> MNNStringArray;
+    pub fn mnn_interpreter_get_input_names(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> MNNStringArray;
 
     /// Get output tensor names
-    pub fn mnn_interpreter_get_output_names(interpreter: *mut MNNInterpreter, session: *mut MNNSession) -> MNNStringArray;
+    pub fn mnn_interpreter_get_output_names(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> MNNStringArray;
 
     /// Free string array
     pub fn mnn_string_array_free(array: *mut MNNStringArray);
@@ -407,7 +482,10 @@ extern "C" {
     );
 
     /// Get session operator count
-    pub fn mnn_interpreter_get_session_op_count(interpreter: *mut MNNInterpreter, session: *mut MNNSession) -> c_int;
+    pub fn mnn_interpreter_get_session_op_count(
+        interpreter: *mut MNNInterpreter,
+        session: *mut MNNSession,
+    ) -> c_int;
 }
 
 // ============================================================================
@@ -428,6 +506,15 @@ extern "C" {
     /// Create runtime manager from config
     pub fn mnn_runtime_manager_create(type_: c_int, num_threads: c_int) -> *mut MNNRuntimeManager;
 
+    /// Create a shared runtime with explicit memory, power, and precision modes.
+    pub fn mnn_runtime_manager_create_v2(
+        type_: c_int,
+        num_threads: c_int,
+        memory_mode: c_int,
+        power_mode: c_int,
+        precision_mode: c_int,
+    ) -> *mut MNNRuntimeManager;
+
     /// Destroy runtime manager
     pub fn mnn_runtime_manager_destroy(manager: *mut MNNRuntimeManager);
 
@@ -438,6 +525,185 @@ extern "C" {
         type_: c_int,
         num_threads: c_int,
     ) -> *mut MNNSession;
+
+    /// Create a session with a shared runtime and explicit backend modes.
+    pub fn mnn_interpreter_create_session_with_runtime_v2(
+        interpreter: *mut MNNInterpreter,
+        runtime: *mut MNNRuntimeManager,
+        type_: c_int,
+        num_threads: c_int,
+        memory_mode: c_int,
+        power_mode: c_int,
+        precision_mode: c_int,
+    ) -> *mut MNNSession;
+}
+
+// ============================================================================
+// Dynamic Graph / Module API (requires feature = "module")
+// ============================================================================
+
+#[cfg(feature = "module")]
+#[repr(C)]
+pub struct MNNModule {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "module")]
+#[repr(C)]
+pub struct MNNVar {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "module")]
+#[repr(C)]
+pub struct MNNExecutor {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "module")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MNNDimensionFormat {
+    Nhwc = 0,
+    Nc4hw4 = 1,
+    Nchw = 2,
+}
+
+#[cfg(feature = "module")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MNNModuleConfig {
+    pub dynamic: bool,
+    pub shape_mutable: bool,
+    pub rearrange: bool,
+    pub backend_type: c_int,
+}
+
+#[cfg(feature = "module")]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MNNVarInfo {
+    pub shape: *mut c_int,
+    pub dim_count: c_int,
+    pub type_code: c_int,
+    pub type_bits: c_int,
+    pub format: MNNDimensionFormat,
+}
+
+#[cfg(feature = "module")]
+extern "C" {
+    pub fn mnn_module_load_from_file(
+        inputs: *const *const c_char,
+        input_count: c_int,
+        outputs: *const *const c_char,
+        output_count: c_int,
+        file_path: *const c_char,
+        config: *const MNNModuleConfig,
+    ) -> *mut MNNModule;
+    pub fn mnn_module_load_from_buffer(
+        inputs: *const *const c_char,
+        input_count: c_int,
+        outputs: *const *const c_char,
+        output_count: c_int,
+        buffer: *const u8,
+        buffer_size: usize,
+        config: *const MNNModuleConfig,
+    ) -> *mut MNNModule;
+    pub fn mnn_module_destroy(module: *mut MNNModule);
+    pub fn mnn_module_clone(module: *const MNNModule, share_params: bool) -> *mut MNNModule;
+    pub fn mnn_module_forward(module: *mut MNNModule, input: *const MNNVar) -> *mut MNNVar;
+    pub fn mnn_module_forward_multi(
+        module: *mut MNNModule,
+        inputs: *const *const MNNVar,
+        input_count: c_int,
+        output_count: *mut c_int,
+    ) -> *mut *mut MNNVar;
+    pub fn mnn_var_array_free(vars: *mut *mut MNNVar, count: c_int);
+    pub fn mnn_var_array_take(vars: *mut *mut MNNVar, count: c_int, index: c_int) -> *mut MNNVar;
+    pub fn mnn_module_get_parameter_count(module: *const MNNModule) -> c_int;
+    pub fn mnn_module_get_parameters(
+        module: *const MNNModule,
+        count: *mut c_int,
+    ) -> *mut *mut MNNVar;
+    pub fn mnn_module_set_training(module: *mut MNNModule, is_training: bool);
+    pub fn mnn_module_is_training(module: *const MNNModule) -> bool;
+    pub fn mnn_module_get_name(module: *const MNNModule) -> *const c_char;
+    pub fn mnn_module_set_name(module: *mut MNNModule, name: *const c_char);
+    pub fn mnn_var_create_input(
+        shape: *const c_int,
+        dim_count: c_int,
+        format: MNNDimensionFormat,
+        type_code: c_int,
+        type_bits: c_int,
+    ) -> *mut MNNVar;
+    pub fn mnn_var_create_constant_float(
+        data: *const f32,
+        shape: *const c_int,
+        dim_count: c_int,
+        format: MNNDimensionFormat,
+    ) -> *mut MNNVar;
+    pub fn mnn_var_destroy(var: *mut MNNVar);
+    pub fn mnn_var_get_info(var: *const MNNVar) -> *mut MNNVarInfo;
+    pub fn mnn_var_info_free(info: *mut MNNVarInfo);
+    pub fn mnn_var_read_float(var: *const MNNVar, count: *mut c_int) -> *mut f32;
+    pub fn mnn_float_array_free(values: *mut f32);
+    pub fn mnn_var_write_float(var: *mut MNNVar, data: *const f32, count: c_int) -> bool;
+    pub fn mnn_var_get_shape(var: *const MNNVar, count: *mut c_int) -> *mut c_int;
+    pub fn mnn_int_array_free(values: *mut c_int);
+    pub fn mnn_var_add(a: *const MNNVar, b: *const MNNVar) -> *mut MNNVar;
+    pub fn mnn_var_sub(a: *const MNNVar, b: *const MNNVar) -> *mut MNNVar;
+    pub fn mnn_var_mul(a: *const MNNVar, b: *const MNNVar) -> *mut MNNVar;
+    pub fn mnn_var_div(a: *const MNNVar, b: *const MNNVar) -> *mut MNNVar;
+    pub fn mnn_var_sum(
+        var: *const MNNVar,
+        axes: *const c_int,
+        axis_count: c_int,
+        keep_dims: bool,
+    ) -> *mut MNNVar;
+    pub fn mnn_var_mean(
+        var: *const MNNVar,
+        axes: *const c_int,
+        axis_count: c_int,
+        keep_dims: bool,
+    ) -> *mut MNNVar;
+    pub fn mnn_var_max(
+        var: *const MNNVar,
+        axes: *const c_int,
+        axis_count: c_int,
+        keep_dims: bool,
+    ) -> *mut MNNVar;
+    pub fn mnn_var_min(
+        var: *const MNNVar,
+        axes: *const c_int,
+        axis_count: c_int,
+        keep_dims: bool,
+    ) -> *mut MNNVar;
+    pub fn mnn_var_reshape(
+        var: *const MNNVar,
+        shape: *const c_int,
+        dim_count: c_int,
+    ) -> *mut MNNVar;
+    pub fn mnn_var_transpose(
+        var: *const MNNVar,
+        perm: *const c_int,
+        dim_count: c_int,
+    ) -> *mut MNNVar;
+    pub fn mnn_var_concat(vars: *const *const MNNVar, var_count: c_int, axis: c_int)
+        -> *mut MNNVar;
+    pub fn mnn_var_split(
+        var: *const MNNVar,
+        splits: c_int,
+        axis: c_int,
+        output_count: *mut c_int,
+    ) -> *mut *mut MNNVar;
+    pub fn mnn_backend_probe_compiled(backend_type: c_int) -> c_int;
+    pub fn mnn_backend_probe_runtime(backend_type: c_int) -> c_int;
+    pub fn mnn_backend_get_device_info(
+        backend_type: c_int,
+        key: *const c_char,
+        value: *mut *mut c_char,
+    ) -> c_int;
+    pub fn mnn_backend_device_info_free(value: *mut c_char);
 }
 
 // ============================================================================
@@ -698,4 +964,87 @@ extern "C" {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    #[test]
+    fn forward_type_constants_match_mnn_3_6_1_header() {
+        assert_eq!(super::MNN_FORWARD_CPU, 0);
+        assert_eq!(super::MNN_FORWARD_METAL, 1);
+        assert_eq!(super::MNN_FORWARD_CUDA, 2);
+        assert_eq!(super::MNN_FORWARD_OPENCL, 3);
+        assert_eq!(super::MNN_FORWARD_AUTO, 4);
+        assert_eq!(super::MNN_FORWARD_OPENGL, 6);
+        assert_eq!(super::MNN_FORWARD_VULKAN, 7);
+        assert_eq!(super::MNN_FORWARD_NPU, 8);
+    }
+}
+
+#[cfg(all(test, feature = "module"))]
+mod module_abi_tests {
+    use super::*;
+
+    #[test]
+    fn declared_expr_and_module_shim_surface_is_available() {
+        let _: Option<
+            unsafe extern "C" fn(
+                *const c_int,
+                c_int,
+                MNNDimensionFormat,
+                c_int,
+                c_int,
+            ) -> *mut MNNVar,
+        > = Some(mnn_var_create_input);
+        let _: Option<unsafe extern "C" fn(*const MNNModule, bool) -> *mut MNNModule> =
+            Some(mnn_module_clone);
+        let _: Option<unsafe extern "C" fn(*const MNNVar, *const MNNVar) -> *mut MNNVar> =
+            Some(mnn_var_add);
+        let _: Option<
+            unsafe extern "C" fn(*const MNNVar, *const c_int, c_int, bool) -> *mut MNNVar,
+        > = Some(mnn_var_sum);
+        let _: Option<unsafe extern "C" fn(*const MNNVar, *const c_int, c_int) -> *mut MNNVar> =
+            Some(mnn_var_reshape);
+        let _: Option<
+            unsafe extern "C" fn(*const MNNVar, c_int, c_int, *mut c_int) -> *mut *mut MNNVar,
+        > = Some(mnn_var_split);
+    }
+
+    #[test]
+    fn module_float_variable_write_and_read_preserve_values() {
+        let shape = [2];
+        let input = unsafe { mnn_var_create_input(&shape[0], 1, MNNDimensionFormat::Nchw, 2, 32) };
+        assert!(!input.is_null());
+
+        let expected = [1.25f32, -3.5f32];
+        assert!(unsafe { mnn_var_write_float(input, expected.as_ptr(), expected.len() as c_int) });
+
+        let mut count = 0;
+        let values = unsafe { mnn_var_read_float(input, &mut count) };
+        assert!(!values.is_null());
+        assert_eq!(count, expected.len() as c_int);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(values, count as usize) },
+            &expected
+        );
+        unsafe { mnn_float_array_free(values) };
+        unsafe { mnn_var_destroy(input) };
+    }
+
+    #[test]
+    fn packed_nc4hw4_raw_float_transfer_is_rejected_without_copying_logical_length() {
+        let shape = [1, 3, 2, 2];
+        let input = unsafe {
+            mnn_var_create_input(
+                shape.as_ptr(),
+                shape.len() as c_int,
+                MNNDimensionFormat::Nc4hw4,
+                2,
+                32,
+            )
+        };
+        assert!(!input.is_null());
+        let values = [0.0f32; 12];
+        assert!(!unsafe { mnn_var_write_float(input, values.as_ptr(), values.len() as c_int) });
+        let mut count = 0;
+        assert!(unsafe { mnn_var_read_float(input, &mut count) }.is_null());
+        unsafe { mnn_var_destroy(input) };
+    }
+}

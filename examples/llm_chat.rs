@@ -11,7 +11,7 @@
 //! cargo run --example llm_chat --features llm,build-from-source --no-default-features -- /path/to/model/config.json
 //! ```
 
-use mnn_rs::{ChatMessage, Llm, MnnResult};
+use mnn_oxide::{ChatMessage, Llm, MnnResult};
 
 fn main() -> MnnResult<()> {
     let config_path = std::env::args()
